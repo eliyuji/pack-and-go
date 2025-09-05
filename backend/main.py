@@ -22,10 +22,12 @@ def read_root():
 def health_check():
     return {"status": "ok"}
 
+#Testing endpoint: http://127.0.0.1:8000/youtube?q=funny+cats
 @app.get("/youtube")
 def youtube_search(q:str):
     return{"results": search_youtube(q)}
 
+#Testing Transcript Endpoint: http://127.0.0.1:8000/transcript/dQw4w9WgXcQ
 @app.get("/transcript/{video_id}")
 def transcript(video_id: str):
     youtube_url = f"https://www.youtube.com/watch?v={video_id}"
