@@ -1,7 +1,9 @@
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from youtube_service import search_youtube
-from youtube_service import gen_transcript
+from backend.youtube_service import search_youtube
+from backend.youtube_service import gen_transcript
+from backend.youtube_service import get_video_metadata
+from backend.youtube_service import save_transcript_and_metadata
 
 app = FastAPI()
 
@@ -32,4 +34,22 @@ def youtube_search(q:str):
 def transcript(video_id: str):
     youtube_url = f"https://www.youtube.com/watch?v={video_id}"
     text = gen_transcript(youtube_url, video_id)
-    return {"video_id": video_id, "transcript": text}
+    
+    metadata = get_video_metadata(video_id)
+    if not metadata:
+        return {"error": "Video not found"}
+    
+    gcs_uri = save_transcript_and_metadata(
+        video_id,
+        metadata["title"],
+        youtube_url,
+        metadata["tags"],
+        text
+    )
+    
+    return {
+        "videoId": video_id,
+        "title": metadata["title"],
+        "tags": metadata["tags"],
+        "transcript_gcs": gcs_uri
+    }
