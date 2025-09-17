@@ -1,10 +1,11 @@
 from googleapiclient.discovery import build
 from backend.cloud_storage import upload_transcript
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 from backend.db import SessionLocal
 from models import YouTubeTranscript
 from dotenv import load_dotenv
 import os
+import torch
 import whisper
 from yt_dlp import YoutubeDL
 
@@ -37,14 +38,26 @@ def search_youtube(query, max_results=5):
         })                       
     return results
 
-def get_captions_transcript(vid_id:str ) -> str|None:
+def get_captions_transcript(vid_id: str) -> str | None:
     """
-    Try to fetch captions from Youtube. Return full transcription if available, else NONE
+    Try to fetch captions from YouTube. 
+    Attempts multiple languages and auto-generated captions. 
+    Returns full transcription if available, else None.
     """
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(vid_id)
-        return " ".join([t["text"] for t in transcript])
-    except Exception:
+        ytt_api = YouTubeTranscriptApi()
+        fetched_transcript = ytt_api.fetch(vid_id)  # Returns FetchedTranscript object
+
+        # Join all snippet texts into one string
+        full_text = " ".join([snippet.text for snippet in fetched_transcript])
+        print(f"Found Transcript")
+        return full_text
+
+    except TranscriptsDisabled:
+        print(f"⚠️ Transcripts disabled for video {vid_id}")
+        return None
+    except Exception as e:
+        print(f"⚠️ Error fetching transcript for {vid_id}: {e}")
         return None
     
 def whisper_get_transcript(video_url: str) -> str:
@@ -65,12 +78,17 @@ def whisper_get_transcript(video_url: str) -> str:
 
     # Download audio
     with YoutubeDL(ydl_opts) as ydl:
-        print(f"Downloading audio from: {video_url}")
+        print(f"🎵 Downloading audio from: {video_url}")
         ydl.download([video_url])
 
-    # Load Whisper model
-    model = whisper.load_model("base")  # try "tiny" if slow
-    print("Transcribing audio with Whisper...")
+    # Choose device (GPU if available, else CPU)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"🚀 Using device: {device}")
+
+    # Load Whisper model on the chosen device
+    model = whisper.load_model("base", device=device)  # try "tiny" for speed
+    print("📝 Transcribing audio with Whisper...")
+
     result = model.transcribe(temp_audio_file)
 
     # Clean up
