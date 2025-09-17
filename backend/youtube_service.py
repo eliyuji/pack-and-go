@@ -1,6 +1,7 @@
 from googleapiclient.discovery import build
 from backend.cloud_storage import upload_transcript
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
+from youtube_transcript_api.proxies import WebshareProxyConfig
 from backend.db import SessionLocal
 from models import YouTubeTranscript
 from dotenv import load_dotenv
@@ -45,7 +46,13 @@ def get_captions_transcript(vid_id: str) -> str | None:
     Returns full transcription if available, else None.
     """
     try:
-        ytt_api = YouTubeTranscriptApi()
+        ytt_api = YouTubeTranscriptApi(
+            proxy_config=WebshareProxyConfig(
+                proxy_username="wkfeugnw",
+                proxy_password="hll54hqoa6a8",
+
+            )
+        )
         fetched_transcript = ytt_api.fetch(vid_id)  # Returns FetchedTranscript object
 
         # Join all snippet texts into one string
