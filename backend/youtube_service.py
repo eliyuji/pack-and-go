@@ -18,7 +18,7 @@ BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 YOUTUBE_API_SERVICE_NAME = "youtube"
 YOUTUBE_API_VERSION = "v3"
 
-def search_youtube(query, max_results=5):
+def search_youtube(query, max_results=10):
     
     #Service Client
     youtube = build(YOUTUBE_API_SERVICE_NAME,YOUTUBE_API_VERSION, developerKey=API_KEY)

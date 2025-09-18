@@ -44,7 +44,7 @@ def process_locations(locations: list[str]):
         for query in queries:
             print(f"   📡 Running query: {query}")
             try:
-                videos = search_youtube(query, max_results=5)
+                videos = search_youtube(query, max_results=10)
             except Exception as e:
                 print(f" Error searching YouTube for {query}: {e}")
                 continue
@@ -96,7 +96,8 @@ def process_locations(locations: list[str]):
     return all_video_ids
 
 if __name__ == "__main__":
-    locations = ["Hong Kong"]
+    locations = [ "New York", "Seoul", "Japan"]
+    #already checked locations --> "Hong Kong", "Macau", "Taipei",
     video_ids = process_locations(locations)
 
     print("\n🎉 Processing complete!")
