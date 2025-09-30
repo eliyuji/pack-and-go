@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import os
 import torch
 import whisper
-from yt_dlp import YoutubeDL
+import yt_dlp
 
 load_dotenv()
 API_KEY = os.getenv("YOUTUBE_API_KEY")
@@ -77,14 +77,14 @@ def whisper_get_transcript(video_url: str) -> str:
 
     # yt-dlp options
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format':"bestaudio/best",
         'outtmpl': temp_audio_file,
         'quiet': True,  # suppress logs
         'no_warnings': True,
     }
 
     # Download audio
-    with YoutubeDL(ydl_opts) as ydl:
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         print(f"🎵 Downloading audio from: {video_url}")
         ydl.download([video_url])
 

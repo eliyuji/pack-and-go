@@ -19,24 +19,52 @@ def chunk_text(text, max_words=50):
 
 def embed_chunks(chunks):
     embeddings = model.encode(chunks)
-    return np.array(embeddings).astype("float32")
+    embeddings = np.array(embeddings).astype("float32")
+    if embeddings.ndim == 1:  # if only 1 embedding error with 1D vector
+        embeddings = embeddings.reshape(1, -1)
+    return embeddings
+
 
 def add_transcript_to_index(bucket_name: str, file_name: str):
-    """Download transcript from GCS, chunk, embed, and add to FAISS index."""
     global index, metadata
 
     transcript_text = download_transcripts(bucket_name, file_name)
+    if not transcript_text.strip():
+        print(f"⚠️ Skipping {file_name}: empty transcript")
+        return
+
     chunks = chunk_text(transcript_text)
+    if not chunks:
+        print(f"⚠️ Skipping {file_name}: no chunks created")
+        return
+
     embeddings = embed_chunks(chunks)
+    embeddings = np.array(embeddings)
+
+    if embeddings.size == 0:
+        print(f"⚠️ Skipping {file_name}: empty embeddings")
+        return
+
+    if embeddings.ndim == 1:
+        embeddings = embeddings.reshape(1, -1)
 
     if index is None:
         dim = embeddings.shape[1]
         index = faiss.IndexFlatL2(dim)
+    else:
+        if embeddings.shape[1] != index.d:
+            raise ValueError(
+                #empty transcripts
+                f"Embedding dimension mismatch for {file_name}: "
+                f"expected {index.d}, got {embeddings.shape[1]}"
+            )
 
     index.add(embeddings)
 
     for chunk in chunks:
         metadata.append({"file_name": file_name, "chunk": chunk})
+
+
 
 def add_all_transcripts(bucket_name: str, prefix: str = ""):
     """Index ALL transcripts in the bucket (with optional prefix filter)."""

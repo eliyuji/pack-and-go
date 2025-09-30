@@ -96,8 +96,11 @@ def process_locations(locations: list[str]):
     return all_video_ids
 
 if __name__ == "__main__":
-    locations = [ "New York", "Seoul", "Japan"]
+    locations = ["New Zealand" ]
     #already checked locations --> "Hong Kong", "Macau", "Taipei",
+    # "Shenzhen", "San Francisco", "Seoul"
+    # "Singapore", "Malaysia", "Rome", "London", "Barcelona", "Dubai", "Australia", "Sydney",
+    #"Amsterdam", "Bora Bora", "Las Vegas", "Miami", "Los Angles", "LA", "Costa Rica", "Puerto Rico", 
     video_ids = process_locations(locations)
 
     print("\n🎉 Processing complete!")
