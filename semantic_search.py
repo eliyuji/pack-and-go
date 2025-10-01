@@ -72,7 +72,7 @@ def add_all_transcripts(bucket_name: str, prefix: str = ""):
     for file_name in file_names:
         print(f"Indexing: {file_name}")
         add_transcript_to_index(bucket_name, file_name)
-
+#testing function
 def search(query: str, k: int = 3):
     """Convert user query to embedding and search FAISS index."""
     global index, metadata
@@ -104,6 +104,17 @@ def load_index(index_path="faiss_index.bin", meta_path="metadata.pkl"):
     with open(meta_path, "rb") as f:
         metadata = pickle.load(f)
     return index, metadata
+
+#RAG pipeline feeding
+def retrieve_context(query, k= 5):
+    query_embeddings = model.encode([query]).astype("float32")
+    distances, indices = index.search(query_embeddings,k)
+
+    retrieved_chunks = []
+    for idx in indices[0]:
+        retrieved_chunks.append(metadata[idx])
+
+    return retrieved_chunks
 
 # Wrapper functions
 def save_index_files():
