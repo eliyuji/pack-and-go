@@ -99,11 +99,12 @@ def save_index(index, metadata, index_path="faiss_index.bin", meta_path="metadat
         pickle.dump(metadata, f)
 
 def load_index(index_path="faiss_index.bin", meta_path="metadata.pkl"):
-    """Load FAISS index and metadata from disk."""
+    """Load FAISS index and metadata from disk into globals."""
+    global index, metadata
     index = faiss.read_index(index_path)
     with open(meta_path, "rb") as f:
         metadata = pickle.load(f)
-    return index, metadata
+    print(f"✅ Loaded FAISS index with {index.ntotal} vectors and {len(metadata)} metadata entries")
 
 #RAG pipeline feeding
 def retrieve_context(query, k= 5):

@@ -1,9 +1,11 @@
 from fastapi import FastAPI, Query
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from backend.youtube_service import search_youtube
 from backend.youtube_service import gen_transcript
 from backend.youtube_service import get_video_metadata
 from backend.youtube_service import save_transcript_and_metadata
+from rag_pipeline import generate_itinerary
 
 app = FastAPI()
 
@@ -15,6 +17,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class QueryReq(BaseModel):
+    query: str
 
 @app.get("/")
 def read_root():
@@ -53,3 +58,7 @@ def transcript(video_id: str):
         "tags": metadata["tags"],
         "transcript_gcs": gcs_uri
     }
+@app.post("/itinerary")
+def get_itinerary(request: QueryReq):
+    result = generate_itinerary(request.query)
+    return result
