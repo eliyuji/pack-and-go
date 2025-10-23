@@ -5,7 +5,7 @@ from backend.youtube_service import search_youtube
 from backend.youtube_service import gen_transcript
 from backend.youtube_service import get_video_metadata
 from backend.youtube_service import save_transcript_and_metadata
-from rag_pipeline import generate_itinerary
+from rag_pipeline import generate_itinerary,format_itinerary,reorder_itinerary,guess_time_slot
 
 app = FastAPI()
 
@@ -61,4 +61,18 @@ def transcript(video_id: str):
 @app.post("/itinerary")
 def get_itinerary(request: QueryReq):
     result = generate_itinerary(request.query)
-    return result
+
+    # if generation failed
+    if "error" in result:
+        return result
+
+    # result["itinerary"] should be a list of days
+    formatted_days = []
+    for day in result.get("itinerary", []):
+        day_num = day.get("day", "?")
+        activities = [a["activity"] for a in day.get("activities", [])]
+        formatted = format_itinerary(activities)
+        formatted_days.append(f"\n🗓️ Day {day_num}\n{formatted}")
+
+    formatted_text = "\n".join(formatted_days)
+    return {"itinerary": formatted_text, "sources": result.get("sources", [])}

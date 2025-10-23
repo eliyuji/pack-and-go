@@ -7,13 +7,11 @@ from dotenv import load_dotenv
 import os, json
 import time
 import spacy
+from tqdm import tqdm
 from groq import Groq, APITimeoutError, APIError
-
+from local_llm import extract_locations_flan_batch
+ 
 load_dotenv()
-
-KEY = os.getenv("GROQ_KEY")
-
-client = Groq(api_key=KEY)
 
 # Load local embedding model
 model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
@@ -44,64 +42,114 @@ def embed_chunks(chunks):
 
 
 def add_transcript_to_index(bucket_name: str, file_name: str):
-    global index, metadata
+    global index, metadata, location_cache
 
     transcript_text = download_transcripts(bucket_name, file_name)
     if not transcript_text.strip():
         print(f"⚠️ Skipping {file_name}: empty transcript")
         return
 
+    # --- Step 1: Chunk the transcript ---
     chunks = chunk_text(transcript_text)
     if not chunks:
         print(f"⚠️ Skipping {file_name}: no chunks created")
         return
 
-    embeddings = embed_chunks(chunks)
-    embeddings = np.array(embeddings)
-
-    if embeddings.size == 0:
-        print(f"⚠️ Skipping {file_name}: empty embeddings")
-        return
-
+    # --- Step 2: Embed and add to FAISS ---
+    embeddings = np.array(embed_chunks(chunks))
     if embeddings.ndim == 1:
         embeddings = embeddings.reshape(1, -1)
 
     if index is None:
         dim = embeddings.shape[1]
         index = faiss.IndexFlatL2(dim)
-    else:
-        if embeddings.shape[1] != index.d:
-            raise ValueError(
-                #empty transcripts
-                f"Embedding dimension mismatch for {file_name}: "
-                f"expected {index.d}, got {embeddings.shape[1]}"
-            )
+        print(f"✅ Created new FAISS index with dimension {dim}")
 
     index.add(embeddings)
+    print(f"📥 Added {len(chunks)} chunks from {file_name} to FAISS index")
 
-    for chunk in chunks:
-        if chunk in location_cache:
-            entities = location_cache[chunk]
-            print("Already processed")
+    # --- Step 3: Extract locations efficiently ---
+    print(f"🌍 Checking cache and extracting new locations for {file_name}...")
+
+    all_entities = []
+    uncached_chunks = []
+    uncached_indices = []
+
+    for i, chunk in enumerate(chunks):
+        cache_key = f"{file_name}:{str(hash(chunk))}"
+        if cache_key in location_cache:
+            all_entities.append(location_cache[cache_key])
         else:
+            uncached_chunks.append(chunk)
+            uncached_indices.append(i)
+            all_entities.append(None)  # placeholder
 
-            entities = get_locations(chunk)
-            #if not entities:
-                # entities = get_locations_llm(chunk)
-            location_cache[chunk] = entities
-            save_cache()
-            print("Finished Processing")
-        if entities:
-            print("Locations found ")
-        else:
-            print("No locations found")
+    # --- Step 4: Extract only for uncached chunks ---
+    if uncached_chunks:
+        print(f"🧠 Extracting {len(uncached_chunks)} uncached chunks using hybrid model...")
+        new_entities = extract_locations_hybrid(uncached_chunks, location_cache, file_name)
 
-        metadata.append({"file_name": file_name, "chunk": chunk, "locations": entities})
+        for i, entities in zip(uncached_indices, new_entities):
+            cache_key = f"{file_name}:{str(hash(chunks[i]))}"
+            location_cache[cache_key] = entities
+            all_entities[i] = entities
+    else:
+        print("✅ All chunks found in cache — skipping extraction.")
+
+    # --- Step 5: Save metadata ---
+    for chunk, entities in zip(chunks, all_entities):
+        metadata.append({
+            "file_name": file_name,
+            "chunk": chunk,
+            "locations": entities or []
+        })
+
+    # --- Step 6: Save updated cache once ---
+    with open("location_cache.json", "w") as f:
+        json.dump(location_cache, f, indent=2)
+    print(f"💾 Saved updated location cache with {len(location_cache)} entries.")
+    save_index(index, metadata, "faiss_index.bin", "metadata.pkl")
+    print(f"💾 Saved FAISS index after processing {file_name}\n")
 
 def add_all_transcripts(bucket_name: str, prefix: str = ""):
     """Index ALL transcripts in the bucket (with optional prefix filter)."""
+    global index, metadata, location_cache
+
     file_names = list_transcripts(bucket_name, prefix)
+
+    # --- Load previous FAISS index & metadata if they exist ---
+    if os.path.exists("faiss_index.bin") and os.path.exists("metadata.pkl"):
+        try:
+            index = faiss.read_index("faiss_index.bin")
+            with open("metadata.pkl", "rb") as f:
+                metadata = pickle.load(f)
+            print(f"✅ Loaded FAISS index with {index.ntotal} vectors and {len(metadata)} metadata entries.")
+        except Exception as e:
+            print(f"⚠️ Could not load previous index: {e}")
+            index = None
+            metadata = []
+    else:
+        print("🆕 Starting with a new FAISS index and metadata list.")
+        index = None
+        metadata = []
+
+    # --- Load previous cache if it exists ---
+    if os.path.exists("location_cache.json"):
+        with open("location_cache.json", "r") as f:
+            location_cache = json.load(f)
+        print(f"✅ Loaded location cache with {len(location_cache)} entries.")
+    else:
+        location_cache = {}
+        print("🆕 Starting with an empty location cache.")
+
+    # --- Skip already processed files ---
+    processed_files = {m["file_name"] for m in metadata} if metadata else set()
+
     for file_name in file_names:
+        if file_name in processed_files:
+            print(f"⏩ Skipping {file_name} (already indexed).")
+            continue
+
         print(f"Indexing: {file_name}")
         add_transcript_to_index(bucket_name, file_name)
 
@@ -140,12 +188,12 @@ def load_index(index_path="faiss_index.bin", meta_path="metadata.pkl"):
     print(f"✅ Loaded FAISS index with {index.ntotal} vectors and {len(metadata)} metadata entries")
 
 #RAG pipeline feeding
-def retrieve_context(query, k= 5, require_locations=False):
+def retrieve_context(query, k= 10, require_locations=False):
     query_embeddings = model.encode([query]).astype("float32")
     distances, indices = index.search(query_embeddings, k)
 
     # Extract location(s) from the query
-    query_locs = get_locations(query)
+    query_locs = extract_locations_flan_batch(query, batch_size = 2)
 
     retrieved_chunks = []
     for idx in indices[0]:
@@ -177,43 +225,55 @@ def save_cache():
     with open(CACHE_FILE, "w") as f:
         json.dump(location_cache, f, indent=2)
 
-def get_locations(text:str):
+def get_locations_spacy(text:str):
     doc = nlp(text)
     locations = [ent.text for ent in doc.ents if ent.label_ in ("GPE", "LOC", "FAC")]
     return list(set(locations))
 
-def get_locations_llm(text: str, retries=3, delay=3):
-    if text in location_cache:
-        return location_cache[text]
-     
-    prompt = f"""
-    Extract all specific locations, landmarks, restaurants, or neighborhoods mentioned
-    in the following text. Return a JSON array of strings, no explanations.
+def extract_locations_hybrid(chunks, cache, file_name):
+    results = []
+    missing_chunks = []
+    missing_indices = []
 
-    Text: {text}
-    """
-    for attempt in range(retries):
-        try:
-            response = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                timeout=20  
-            )
+    total_chunks = len(chunks)
+    print(f"\n🌍 Starting hybrid extraction for {file_name} ({total_chunks} chunks)\n")
 
-            import json
-            result = json.loads(response.choices[0].message.content)
-            location_cache[text] = result
-            save_cache()
-            return result
-        
-        #retry with delay to relieve llm request calls
-        except (APITimeoutError, APIError, json.JSONDecodeError) as e:
-            print(f"⚠️ Retry {attempt+1}/{retries} after error: {e}")
-            time.sleep(delay)
-    print("❌ Failed to extract locations after retries.")
-    location_cache[text] = []
-    save_cache()
-    return []
+    # Pass 1: Check cache + run spaCy
+    for i, chunk in enumerate(tqdm(chunks, desc="🔎 Checking cache & spaCy", unit="chunk")):
+        cache_key = f"{file_name}:{hash(chunk)}"
 
+        # ✅ Cache hit
+        if cache_key in cache:
+            results.append(cache[cache_key])
+            continue
 
+        # 🔍 Try spaCy extraction
+        spacy_locs = get_locations_spacy(chunk)
+        if spacy_locs:
+            tqdm.write(f"✅ spaCy found {len(spacy_locs)} locations in chunk {i}")
+            results.append(spacy_locs)
+            cache[cache_key] = spacy_locs
+        else:
+            tqdm.write(f"⚠️ spaCy found no locations in chunk {i} → queuing for Flan-T5")
+            results.append(None)
+            missing_chunks.append(chunk)
+            missing_indices.append(i)
+
+    
+    if missing_chunks:
+        print(f"\n🤖 Flan-T5 on {len(missing_chunks)} missing chunks...\n")
+
+        start_time = time.perf_counter()
+        flan_results = extract_locations_flan_batch(missing_chunks, batch_size=2)
+        elapsed_time = time.perf_counter() - start_time
+
+        print(f"⏱️ Flan-T5 extraction completed in {elapsed_time:.2f} seconds\n")
+
+       
+        for idx, locs in zip(missing_indices, flan_results):
+            results[idx] = locs
+            cache_key = f"{file_name}:{hash(chunks[idx])}"
+            cache[cache_key] = locs
+
+    print(f"✅ Completed hybrid extraction for {file_name}\n")
+    return results
