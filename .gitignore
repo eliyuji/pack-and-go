@@ -51,5 +51,7 @@ frontend/node_modules/
 __pycache__/
 *.pyc
 
+faiss_index.bin
+
 
 
