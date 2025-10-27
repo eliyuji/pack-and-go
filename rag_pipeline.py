@@ -1,6 +1,7 @@
 from groq import Groq
 import json
 from semantic_search import load_index, retrieve_context
+from backend.database.attraction_query import get_places_for_city
 from dotenv import load_dotenv
 import os
 import re
@@ -63,19 +64,23 @@ ACTIVITY_TIME_RULES = {
         "garden", "memorial", "scenic view"
     ],
     "afternoon": [
-        "shopping", "district", "market (day)", "lunch", "art", "mall",
+        "shopping", "district", "market(day)", "lunch", "art", "mall",
         "zoo", "aquarium", "tour", "street"
     ],
     "evening": [
-        "night market", "bar", "club", "street food", "dinner", "rooftop",
-        "river", "night view", "show"
+        "night market", "Night Market","bar", "club", "street food", "dinner", "rooftop",
+        "river", "night view", "show", "night"
     ]
 }
 
 SYSTEM_PROMPT = """
-You are a helpful travel assistant.
-Given a user query and transcript context from YouTube travel videos,
-create a structured travel itinerary in JSON format.
+You are a travel itinerary generator.
+
+You ALWAYS respond with **valid JSON only** — no markdown, no extra commentary, no prose.
+
+Your goal:
+Given a user query, YouTube travel transcript context, and a list of attractions/food/activities,
+return a structured JSON itinerary.
 
 Format:
 {
@@ -83,22 +88,37 @@ Format:
     {
       "day": 1,
       "activities": [
-        {"time": "Morning", "activity": "Visit Longshan Temple in Wanhua District", "source": "video_id"},
-        {"time": "Afternoon", "activity": "Eat beef noodle soup at Yongkang Street", "source": "video_id"},
-        {"time": "Evening", "activity": "Explore Raohe Night Market", "source": "video_id"}
+        {
+          "time": "Morning",
+          "activity": "Visit Longshan Temple in Wanhua District",
+          "food": "Taiwanese breakfast at Fuhang Soy Milk",
+          "source": "video_id1"
+        },
+        {
+          "time": "Afternoon",
+          "activity": "Explore Taipei 101 observation deck",
+          "food": "Din Tai Fung at Taipei 101",
+          "source": "video_id2"
+        },
+        {
+          "time": "Evening",
+          "activity": "Walk around Raohe Night Market",
+          "food": "Try pepper buns and bubble tea",
+          "source": "video_id3"
+        }
       ]
-    },
-    {"day": 2, "activities": [...]}
+    }
   ],
-  "sources": ["video_id1", "video_id2", ...]
+  "sources": ["video_id1", "video_id2", "video_id3"]
 }
 
 Rules:
-- Always respond in valid JSON.
-- Be as specific as possible: include place names, neighborhoods, restaurants, landmarks, or exact attractions.
-- Use the transcript context to extract specific locations.
-- Each day MUST include three time slots: Morning, Afternoon, and Evening — even if evening activity must be inferred.
-- If the transcript context is vague, make an informed guess but label source as "unknown".
+- Return ONLY valid JSON.
+- Each day must have 3 time slots: Morning, Afternoon, Evening.
+- Each time slot must have an 'activity' AND a 'food' entry.
+- 'food' should be specific (restaurant, market, or dish).
+- If unknown, make a realistic guess.
+- Do not use markdown or text explanations.
 """
 
 load_dotenv()
@@ -108,45 +128,106 @@ KEY = os.getenv("GROQ_KEY")
 client = Groq(api_key=KEY)
 load_index()
 
-def build_prompt(query, context_chunks):
+def extract_json(text: str):
+    """
+    Tries multiple strategies to extract valid JSON from a model response.
+    Handles:
+    - ```json ... ``` fenced blocks
+    - Plain JSON without code fences
+    - Text with JSON embedded inside
+    """
+    # Try matching fenced JSON
+    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text)
+    if match:
+        candidate = match.group(1)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # Try matching any {...} block that looks like JSON
+    match = re.search(r"(\{[\s\S]*\})", text)
+    if match:
+        candidate = match.group(1)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # Try direct load if the whole text is just JSON
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+def generate_itinerary(query, k=10):
+    # Semantic transcript retrieval
+    context = retrieve_context(query, k=k)
     context_text = "\n\n".join(
-        [f"From {c['file_name']}: {c['chunk']}" for c in context_chunks]
+        [f"From {c['file_name']}: {c['chunk']}" for c in context]
     )
 
-    return f"{SYSTEM_PROMPT}\n\nUSER QUERY: {query}\n\nCONTEXT (use specific place names when available):\n{context_text}"
-def generate_itinerary(query, k=10):
-    context = retrieve_context(query, k=k)
-    full_prompt = build_prompt(query, context)
+    # Extract city name from query (simple example)
+    city_name = query.split(" in ")[-1].strip().title()
 
+    # SQL structured data retrieval
+    structured_places = get_places_for_city(city_name)
+    structured_text = "\n".join(
+        f"{p['category'].capitalize()} - {p['name']} ({p['district']}, {p['rating']}⭐)"
+        for p in structured_places
+    )
+
+    # Merge both before sending to Groq
+    combined_context = (
+        f"Semantic travel insights:\n{context_text}\n\n"
+        f"Local recommendations from Google Places:\n{structured_text}"
+    )
+
+    # Build prompt for LLM
+    user_prompt = f"Generate a structured travel itinerary for this query:\n{query}\n\nCONTEXT:\n{combined_context}"
+
+    # Step 3a: make the first call
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": full_prompt}
+            {"role": "user", "content": user_prompt}
         ],
-        temperature=0.7
+        temperature=0.6
     )
 
     raw_output = response.choices[0].message.content.strip()
 
-    # 🧹 Step 1: Extract JSON between ```json ... ``` if present
-    json_match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", raw_output)
-    if json_match:
-        json_text = json_match.group(1)
-    else:
-        # Fallback: try to find the first JSON-like block
-        json_match = re.search(r"(\{[\s\S]*\})", raw_output)
-        json_text = json_match.group(1) if json_match else None
+    # Step 3b: try parsing JSON
+    parsed = extract_json(raw_output)
 
-    # 🧠 Step 2: Parse JSON safely
-    if json_text:
-        try:
-            itinerary = json.loads(json_text)
-            itinerary = normalize_activity_times(itinerary)
-            return itinerary
-        except json.JSONDecodeError as e:
-            print(f"⚠️ JSON decode error: {e}")
-            return {"error": "Invalid JSON after cleanup", "raw": raw_output}
+    # Step 3c: retry loop if not valid JSON
+    retries = 0
+    while not parsed and retries < 2:
+        retries += 1
+        fix_prompt = f"""
+The previous output was not valid JSON.
+Please rewrite it as VALID JSON following the required schema.
 
-    # ❌ Step 3: If no JSON found at all
-    return {"error": "No JSON found in model output", "raw": raw_output}
+Here is the invalid output:
+{raw_output}
+"""
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": fix_prompt}
+            ],
+            temperature=0
+        )
+        raw_output = response.choices[0].message.content.strip()
+        parsed = extract_json(raw_output)
+
+    # Step 4: if still not valid, return the raw text for debugging
+    if not parsed:
+        return {"error": "No JSON Found", "raw": raw_output}
+
+    # Normalize times
+    itinerary = normalize_activity_times(parsed)
+
+    return itinerary

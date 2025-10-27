@@ -58,6 +58,8 @@ def transcript(video_id: str):
         "tags": metadata["tags"],
         "transcript_gcs": gcs_uri
     }
+class QueryReq(BaseModel):
+    query:str
 @app.post("/itinerary")
 def get_itinerary(request: QueryReq):
     result = generate_itinerary(request.query)

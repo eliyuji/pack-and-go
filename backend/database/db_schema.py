@@ -26,8 +26,10 @@ class Place(Base):
     lon = Column(Float)
     category = Column(String)
     rating = Column(Float)
+    address = Column(String)
     district_id = Column(Integer, ForeignKey("districts.id"))
     district = relationship("District", back_populates="places")
+    place_id = Column(String, unique=True)
 
 engine = create_engine("sqlite:///travel_data.db")
 Base.metadata.create_all(engine)
