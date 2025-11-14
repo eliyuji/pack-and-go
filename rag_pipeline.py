@@ -4,6 +4,7 @@ from semantic_search import load_index, retrieve_context
 from backend.database.attraction_query import get_places_for_city
 from dotenv import load_dotenv
 import os
+import random
 import re
 
 def guess_time_slot(activity: str) -> str:
@@ -45,17 +46,23 @@ def normalize_activity_times(itinerary):
     return itinerary
 
 def format_itinerary(activities):
-    """Format the itinerary with time-of-day headers."""
-    ordered = reorder_itinerary(activities)
+    """Format itinerary including food suggestions."""
     grouped = {"morning": [], "afternoon": [], "evening": []}
-    for act in ordered:
-        grouped[guess_time_slot(act)].append(act)
-    
+    for a in activities:
+        slot = guess_time_slot(a["activity"])
+        grouped[slot].append(a)
+
     output = []
     for slot in ["morning", "afternoon", "evening"]:
         if grouped[slot]:
             output.append(f"\n☀️ {slot.capitalize()}:")
-            output.extend(f"- {a}" for a in grouped[slot])
+            for a in grouped[slot]:
+                act = a.get("activity", "")
+                food = a.get("food", "")
+                if food:
+                    output.append(f"- {act} 🍽️ Suggestion: {food}")
+                else:
+                    output.append(f"- {act}")
     return "\n".join(output)
 
 ACTIVITY_TIME_RULES = {
@@ -159,59 +166,94 @@ def extract_json(text: str):
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+def ensure_food(itinerary:dict, structured_places:list):
+    """If any time slot is missing food, it'll fill it with t """
+    restaurants = [p for p in structured_places if p.get("category")=="restaurant"]
+    districts = sorted({p.get("district", "") for p in structured_places if p.get("district")})
+    #if we can match the district from the activity suggested
+    def pick_restaurant_for_activity(act_text):
+        act_low = (act_text or "").lower()
+        matched_district = None
+        for d in districts:
+              if d and d.lower().split()[0] in act_low:
+                  matched_district = d
+        candid = [r for r in restaurants if r.get("district") == matched_district] if matched_district else restaurants
+        if not candid:
+            #if no district found then fall back to any district (should later on search for places within x radius)
+            candid = restaurants
+        if not candid:
+            return "unknown"
+        sel = random.choice(candid)
+        return f"{sel.get('name')} ({sel.get('district','unknown district')})"
+    
+    for day in itinerary.get("itinerary", []):
+        for activity in day.get("activities", []):
+            if not activity.get("food"):
+                activity_text = activity.get("activity", "")
+                activity["food"] = pick_restaurant_for_activity(activity_text)
+    return itinerary
 
-def generate_itinerary(query, k=10):
-    # Semantic transcript retrieval
+def extract_json(text: str):
+    # fenced ```json blocks
+    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text)
+    if match:
+        cand = match.group(1)
+        try:
+            return json.loads(cand)
+        except json.JSONDecodeError:
+            pass
+    # any top-level {...}
+    match = re.search(r"(\{[\s\S]*\})", text)
+    if match:
+        cand = match.group(1)
+        try:
+            return json.loads(cand)
+        except json.JSONDecodeError:
+            pass
+    # whole text
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+def generate_itinerary(query, k=10, max_retries=2):
+    # 1) retrieval
     context = retrieve_context(query, k=k)
-    context_text = "\n\n".join(
-        [f"From {c['file_name']}: {c['chunk']}" for c in context]
-    )
+    context_text = "\n\n".join([f"From {c['file_name']}: {c['chunk']}" for c in context])
 
-    # Extract city name from query (simple example)
-    city_name = query.split(" in ")[-1].strip().title()
+    # 2) structured places from SQL
+    city_name = (query.split(" in ")[-1].strip().title() if " in " in query else None)
+    structured_places = get_places_for_city(city_name) if city_name else []
+    structured_text = "\n".join(f"{p['category'].capitalize()} - {p['name']} ({p['district']}, {p['rating']}⭐)" for p in structured_places)
 
-    # SQL structured data retrieval
-    structured_places = get_places_for_city(city_name)
-    structured_text = "\n".join(
-        f"{p['category'].capitalize()} - {p['name']} ({p['district']}, {p['rating']}⭐)"
-        for p in structured_places
-    )
+    combined_context = f"Semantic travel insights:\n{context_text}\n\nLocal recommendations from Google Places:\n{structured_text}"
 
-    # Merge both before sending to Groq
-    combined_context = (
-        f"Semantic travel insights:\n{context_text}\n\n"
-        f"Local recommendations from Google Places:\n{structured_text}"
-    )
-
-    # Build prompt for LLM
     user_prompt = f"Generate a structured travel itinerary for this query:\n{query}\n\nCONTEXT:\n{combined_context}"
 
-    # Step 3a: make the first call
+    # Step 3: call LLM
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model="llama-3.1-8b-instant" \
+        "",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt}
         ],
         temperature=0.6
     )
-
     raw_output = response.choices[0].message.content.strip()
-
-    # Step 3b: try parsing JSON
     parsed = extract_json(raw_output)
 
-    # Step 3c: retry loop if not valid JSON
+    # Step 4: retry/fixer loop
     retries = 0
-    while not parsed and retries < 2:
+    while not parsed and retries < max_retries:
         retries += 1
-        fix_prompt = f"""
-The previous output was not valid JSON.
-Please rewrite it as VALID JSON following the required schema.
-
-Here is the invalid output:
-{raw_output}
-"""
+        # Strong fixer: insist on valid JSON only
+        fix_prompt = (
+            "The previous response was not valid JSON. "
+            "Please REWRITE ONLY the data as VALID JSON following this exact schema (no markdown, no surrounding text, no backticks):\n\n"
+            f"{SYSTEM_PROMPT}\n\n"
+            f"Previous (invalid) response:\n{raw_output}\n\nReturn only the corrected JSON now."
+        )
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
@@ -223,11 +265,10 @@ Here is the invalid output:
         raw_output = response.choices[0].message.content.strip()
         parsed = extract_json(raw_output)
 
-    # Step 4: if still not valid, return the raw text for debugging
     if not parsed:
         return {"error": "No JSON Found", "raw": raw_output}
 
-    # Normalize times
+    # Normalize times, ensure food, then return
     itinerary = normalize_activity_times(parsed)
-
+    itinerary = ensure_food(itinerary, structured_places)
     return itinerary

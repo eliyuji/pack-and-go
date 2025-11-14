@@ -60,6 +60,7 @@ CITY_DISTRICTS = {
         "Wenshan District",],
 }
 
+
 def fetch_places(query, location=None, radius=3000, type=None, max_results=20):
     url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
     params = {"query": query, "key": API_KEY, "radius": radius}
