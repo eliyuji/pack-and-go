@@ -1,388 +1,671 @@
-import streamlit as st
+import os
+import re
+import html
 import requests
+import streamlit as st
 
-# Page config with custom theme
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
+REQUEST_TIMEOUT = 120
+
+DESTINATIONS = [
+    {
+        "city": "Paris",
+        "label": "3-5 days",
+        "image": "https://images.unsplash.com/photo-1502602898657-3e91760cbb34?auto=format&fit=crop&w=600&h=800",
+    },
+    {
+        "city": "Tokyo",
+        "label": "3-5 days",
+        "image": "https://images.unsplash.com/photo-1540959733332-eab4deabeeaf?auto=format&fit=crop&w=600&h=800",
+    },
+    {
+        "city": "Bali",
+        "label": "3-5 days",
+        "image": "https://images.unsplash.com/photo-1537996194471-e657df975ab2?auto=format&fit=crop&w=600&h=800",
+    },
+    {
+        "city": "New York",
+        "label": "3-5 days",
+        "image": "https://images.unsplash.com/photo-1496442226666-8d4d0e62e6e9?auto=format&fit=crop&w=600&h=800",
+    },
+]
+
 st.set_page_config(
     page_title="Pack & Go",
     page_icon="🌍",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
-# Initialize session state
-if "itinerary_generated" not in st.session_state:
-    st.session_state.itinerary_generated = False
-if "current_itinerary" not in st.session_state:
-    st.session_state.current_itinerary = None
-if "structured_itinerary" not in st.session_state:
-    st.session_state.structured_itinerary = None
-if "original_query" not in st.session_state:
-    st.session_state.original_query = ""
-if "conversation_history" not in st.session_state:
-    st.session_state.conversation_history = []
+defaults = {
+    "page": "home",
+    "itinerary_generated": False,
+    "current_itinerary": None,
+    "structured_itinerary": None,
+    "original_query": "",
+    "conversation_history": [],
+    "last_modification": None,
+    "recent_itineraries": [],
+    "selected_city": None,
+    "seed_step": 0,
+    "seed_days": None,
+    "seed_vibe": None,
+    "seed_messages": [],
+}
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
-# Custom CSS for enhanced aesthetics
-st.markdown("""
+st.markdown(
+    """
     <style>
-    /* Main background gradient */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"] { font-family: Inter, sans-serif; }
+
     .stApp {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: radial-gradient(1200px 600px at 10% -10%, #3b2a6e 0%, transparent 50%),
+                    radial-gradient(900px 500px at 100% 0%, #5b2d8e 0%, transparent 45%),
+                    linear-gradient(180deg, #1a1028 0%, #120c1c 100%);
+        color: #f7f4ff;
     }
-    
-    /* Header styling */
-    .main-header {
-        text-align: center;
-        padding: 2rem 0;
-        color: white;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+
+    header[data-testid="stHeader"] { background: transparent; }
+    #MainMenu, footer { visibility: hidden; }
+    .block-container { padding-top: 1.2rem; max-width: 1180px; }
+
+    .top-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 1.5rem;
     }
-    
-    .main-header h1 {
-        font-size: 3.5rem;
+    .brand {
+        font-size: 1.35rem;
         font-weight: 700;
-        margin-bottom: 0.5rem;
-        animation: fadeInDown 0.8s ease-in;
+        color: #fff;
+        letter-spacing: 0.01em;
     }
-    
-    .main-header p {
-        font-size: 1.3rem;
-        opacity: 0.95;
-        animation: fadeInUp 0.8s ease-in;
+    .hero-title {
+        font-size: 2.6rem;
+        font-weight: 700;
+        color: #fff;
+        margin: 1.2rem 0 0.35rem 0;
     }
-    
-    /* Input container */
-    .input-container {
-        background: rgba(255, 255, 255, 0.95);
-        padding: 2.5rem;
-        border-radius: 20px;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        margin: 2rem auto;
-        max-width: 800px;
+    .hero-sub {
+        color: rgba(255,255,255,0.78);
+        font-size: 1.15rem;
+        margin-bottom: 1.6rem;
+    }
+    .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin: 2rem 0 0.8rem 0;
+        color: #fff;
+    }
+    .section-head h3 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+    .muted { color: rgba(255,255,255,0.55); font-size: 0.92rem; }
+
+    .dest-caption {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: rgba(16,10,28,0.72);
         backdrop-filter: blur(10px);
+        border-radius: 0 0 18px 18px;
+        padding: 0.7rem 0.9rem;
+        margin-top: -8px;
+        position: relative;
+        z-index: 1;
     }
-    
-    /* Feedback container */
-    .feedback-container {
-        background: rgba(255, 255, 255, 0.95);
-        padding: 2rem;
-        border-radius: 20px;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        margin: 2rem auto;
-        max-width: 800px;
-        backdrop-filter: blur(10px);
+    .dest-caption strong { color: #fff; display: block; }
+    .dest-caption span { color: rgba(255,255,255,0.7); font-size: 0.85rem; }
+    [data-testid="stImage"] img {
+        border-radius: 18px 18px 0 0;
+        object-fit: cover;
+        width: 100%;
+        height: 260px;
     }
-    
-    /* Itinerary card */
+
     .itinerary-card {
-        background: white;
-        padding: 2rem;
-        border-radius: 15px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        margin: 1rem 0;
-        animation: slideIn 0.5s ease-out;
-        color: #2d3748;
-    }
-    
-    .day-header {
-        color: #667eea;
-        font-size: 1.5rem;
-        font-weight: 600;
-        margin-bottom: 1rem;
-        padding-bottom: 0.5rem;
-        border-bottom: 3px solid #667eea;
-    }
-    
-    .activity-item {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        padding: 1rem;
-        border-radius: 10px;
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(255,255,255,0.08);
+        padding: 1.4rem 1.5rem;
+        border-radius: 20px;
         margin: 0.8rem 0;
-        border-left: 4px solid #764ba2;
-        color: #2d3748;
+        color: #f4f0ff;
+    }
+    .day-header {
+        color: #e2d4ff;
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin-bottom: 0.8rem;
+        padding-bottom: 0.45rem;
+        border-bottom: 2px solid rgba(196, 132, 252, 0.5);
+    }
+    .slot-label {
+        font-weight: 600;
+        color: #d8b4fe;
+        margin-top: 0.9rem;
         font-size: 1rem;
     }
-    
-    /* Conversation bubble */
-    .conversation-bubble {
-        background: #f0f4ff;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-        border-left: 4px solid #667eea;
-        color: #2d3748;
+    .activity-item {
+        background: rgba(255,255,255,0.08);
+        padding: 0.85rem 1rem;
+        border-radius: 12px;
+        margin: 0.55rem 0;
+        border-left: 3px solid #c084fc;
+        color: #f7f4ff;
     }
-    
-    /* Animations */
-    @keyframes fadeInDown {
-        from {
-            opacity: 0;
-            transform: translateY(-20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
+    .recent-card {
+        background: rgba(255,255,255,0.08);
+        border-radius: 16px;
+        padding: 1rem 1.1rem;
+        margin-bottom: 0.7rem;
+        color: #fff;
     }
-    
-    @keyframes fadeInUp {
-        from {
-            opacity: 0;
-            transform: translateY(20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
+
+    .stTextInput > div > div > input {
+        background: rgba(20, 14, 36, 0.85) !important;
+        color: #fff !important;
+        border-radius: 999px !important;
+        border: 1px solid rgba(255,255,255,0.12) !important;
+        padding: 0.95rem 1.2rem !important;
     }
-    
-    @keyframes slideIn {
-        from {
-            opacity: 0;
-            transform: translateX(-20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateX(0);
-        }
+    .stTextInput > div > div > input::placeholder { color: rgba(255,255,255,0.45); }
+
+    div[data-testid="stChatInput"] textarea {
+        background: rgba(20, 14, 36, 0.9);
+        color: #fff;
+        border-radius: 16px;
     }
-    
-    /* Button styling */
+
     .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(90deg, #7c3aed 0%, #db2777 100%);
         color: white;
-        font-size: 1.2rem;
         font-weight: 600;
-        padding: 0.8rem 3rem;
-        border-radius: 50px;
+        border-radius: 999px;
         border: none;
-        box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
-        transition: all 0.3s ease;
-        width: 100%;
+        padding: 0.55rem 1.2rem;
+        box-shadow: 0 8px 24px rgba(124, 58, 237, 0.35);
     }
-    
     .stButton > button:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 15px 35px rgba(102, 126, 234, 0.6);
+        transform: translateY(-1px);
+        border: none;
+        color: white;
     }
-    
-    /* Input field styling */
-    .stTextInput > div > div > input,
-    .stTextArea > div > div > textarea {
-        border-radius: 10px;
-        border: 2px solid #e0e0e0;
-        padding: 1rem;
-        font-size: 1.1rem;
-        transition: all 0.3s ease;
+    .stButton > button[kind="secondary"] {
+        background: rgba(255,255,255,0.08);
+        box-shadow: none;
+        color: rgba(255,255,255,0.88);
+        font-weight: 500;
+        border: 1px solid rgba(255,255,255,0.12);
     }
-    
-    .stTextInput > div > div > input:focus,
-    .stTextArea > div > div > textarea:focus {
-        border-color: #667eea;
-        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    .stButton > button[kind="secondary"]:hover {
+        color: #fff;
+        background: rgba(255,255,255,0.14);
     }
-    
-    /* Hide Streamlit branding */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def format_modification(mod):
+    if not mod:
+        return ""
+    change_type = mod.get("type")
+    day = mod.get("target_day")
+    time_slot = mod.get("target_time")
+    if change_type == "modify_activity" and day:
+        slot = f" {time_slot}" if time_slot else ""
+        return f"Updated Day {day}{slot}"
+    if change_type == "modify_day" and day:
+        return f"Updated Day {day}"
+    if change_type == "add_preference":
+        return "Updated itinerary based on your feedback"
+    if change_type == "regenerate_all":
+        return "Regenerated the full itinerary"
+    return "Updated itinerary"
+
 
 def generate_itinerary_request(query):
-    """Make API request to generate itinerary"""
     try:
-        # Try v2 endpoint first (LangGraph), fallback to v1
         response = requests.post(
-            "http://127.0.0.1:8000/itinerary/v2",
+            f"{BACKEND_URL}/itinerary/v2",
             json={"query": query},
-            timeout=30
+            timeout=REQUEST_TIMEOUT,
         )
-        
+        if response.status_code == 200:
+            payload = response.json()
+            if payload.get("error"):
+                return None, payload["error"]
+            return payload, None
+        try:
+            detail = response.json().get("detail", "")
+        except Exception:
+            detail = response.text
+        return None, detail or "We couldn't generate your itinerary. Is the API running?"
+    except requests.exceptions.Timeout:
+        return None, "Request timed out. Please try again."
+    except requests.exceptions.ConnectionError:
+        return None, f"Could not connect to {BACKEND_URL}"
+    except Exception as exc:
+        return None, str(exc)
+
+
+def refine_itinerary_request(feedback):
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/itinerary/refine",
+            json={
+                "query": st.session_state.original_query,
+                "feedback": feedback,
+                "current_itinerary": st.session_state.structured_itinerary,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
         if response.status_code == 200:
             return response.json(), None
-        else:
-            return None, "❌ Oops! We couldn't generate your itinerary. Please try again."
-            
-    except requests.exceptions.Timeout:
-        return None, "⏱️ Request timed out. Please try again."
-    except requests.exceptions.ConnectionError:
-        return None, "🔌 Could not connect to the server. Make sure it's running on http://127.0.0.1:8000"
-    except Exception as e:
-        return None, f"❌ An error occurred: {str(e)}"
+        try:
+            detail = response.json().get("detail", "")
+        except Exception:
+            detail = response.text
+        return None, detail or "Failed to update itinerary"
+    except Exception as exc:
+        return None, str(exc)
+
+
+def looks_complete(text: str) -> bool:
+    lowered = text.lower()
+    has_days = bool(re.search(r"\b(\d+\s*-?\s*day|week|weekend)\b", lowered))
+    has_place = any(
+        city.lower() in lowered for city in [d["city"] for d in DESTINATIONS]
+    ) or bool(re.search(r"\b(in|to)\s+[A-Z]", text))
+    has_vibe = any(
+        word in lowered
+        for word in ("food", "culture", "outdoor", "night", "museum", "mix", "beach")
+    )
+    return has_days and (has_place or st.session_state.selected_city) and (has_vibe or len(text.split()) >= 8)
+
+
+def parse_days(text: str) -> str:
+    lowered = text.lower()
+    if "week" in lowered:
+        return "7-day"
+    match = re.search(r"(\d+)\s*-?\s*day", lowered)
+    if match:
+        return f"{match.group(1)}-day"
+    if "5" in lowered or "five" in lowered:
+        return "5-day"
+    if "3" in lowered or "three" in lowered:
+        return "3-day"
+    return "3-day"
+
+
+def parse_vibe(text: str) -> str:
+    lowered = text.lower()
+    found = [
+        label
+        for key, label in (
+            ("food", "food"),
+            ("culture", "culture"),
+            ("museum", "culture"),
+            ("outdoor", "outdoors"),
+            ("nature", "outdoors"),
+            ("night", "nightlife"),
+            ("mix", "a mix of experiences"),
+        )
+        if key in lowered
+    ]
+    if found:
+        unique = list(dict.fromkeys(found))
+        return " and ".join(unique)
+    return text.strip() or "a mix of experiences"
+
+
+def compose_query(city: str, days: str, vibe: str) -> str:
+    return f"{days} trip in {city} focused on {vibe}"
+
+
+def apply_generated(data, query: str, save_recent: bool = True):
+    st.session_state.current_itinerary = data
+    st.session_state.structured_itinerary = data.get("structured", {})
+    st.session_state.original_query = query
+    st.session_state.itinerary_generated = True
+    st.session_state.last_modification = None
+    st.session_state.page = "itinerary"
+    st.session_state.conversation_history = [
+        {"role": "user", "content": query},
+        {
+            "role": "assistant",
+            "content": "Here is your itinerary. Tell me what to change — a day, a time slot, or the vibe.",
+        },
+    ]
+    if save_recent:
+        st.session_state.recent_itineraries.insert(
+            0,
+            {
+                "query": query,
+                "structured": data.get("structured", {}),
+                "formatted": data.get("itinerary", ""),
+                "raw": data,
+            },
+        )
+        st.session_state.recent_itineraries = st.session_state.recent_itineraries[:8]
+
+
+def start_seed_chat(city: str):
+    st.session_state.selected_city = city
+    st.session_state.seed_step = 0
+    st.session_state.seed_days = None
+    st.session_state.seed_vibe = None
+    st.session_state.seed_messages = [
+        {
+            "role": "assistant",
+            "content": f"{city} is a great pick. 3 days, 5 days, or a full week?",
+        }
+    ]
+    st.session_state.page = "chat_seed"
+
+
+def go_home():
+    st.session_state.page = "home"
+    st.session_state.itinerary_generated = False
+    st.session_state.selected_city = None
+    st.session_state.seed_messages = []
+
 
 def display_itinerary(itinerary_text):
-    """Display the itinerary in formatted cards"""
-    if itinerary_text:
-        # Split by days
-        days = itinerary_text.split("🗓️ Day ")
-        days = [d.strip() for d in days if d.strip()]
-        
-        for day_text in days:
-            lines = day_text.split("\n")
-            day_num = lines[0].strip() if lines else "?"
-            
-            with st.container():
-                st.markdown('<div class="itinerary-card">', unsafe_allow_html=True)
-                st.markdown(f'<div class="day-header">🗓️ Day {day_num}</div>', unsafe_allow_html=True)
-                
-                current_time = None
-                for line in lines[1:]:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    # Check if it's a time header (☀️ Morning:, etc.)
-                    if line.startswith("☀️") or line.startswith("🌤️") or line.startswith("🌙"):
-                        current_time = line
-                        st.markdown(f'<p style="font-weight: 600; color: #764ba2; margin-top: 1rem; font-size: 1.1rem;">{line}</p>', unsafe_allow_html=True)
-                    elif line.startswith("-"):
-                        # Activity item
-                        activity_text = line[1:].strip()
-                        st.markdown(f'<div class="activity-item">{activity_text}</div>', unsafe_allow_html=True)
-                
-                st.markdown('</div>', unsafe_allow_html=True)
+    if not itinerary_text:
+        return
+    if "🗓️ Day " not in itinerary_text:
+        st.markdown(itinerary_text)
+        return
+    days = itinerary_text.split("🗓️ Day ")
+    days = [d.strip() for d in days if d.strip()]
+    for day_text in days:
+        lines = day_text.split("\n")
+        day_num = lines[0].strip() if lines else "?"
+        parts = [f'<div class="itinerary-card"><div class="day-header">Day {html.escape(str(day_num))}</div>']
+        for line in lines[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("☀️") or line.startswith("🌤️") or line.startswith("🌙"):
+                parts.append(f'<div class="slot-label">{html.escape(line)}</div>')
+            elif line.startswith("-"):
+                parts.append(
+                    f'<div class="activity-item">{html.escape(line[1:].strip())}</div>'
+                )
+        parts.append("</div>")
+        st.markdown("".join(parts), unsafe_allow_html=True)
 
-# Header
-st.markdown("""
-    <div class="main-header">
-        <h1>🌍 Pack & Go</h1>
-        <p>Your AI-Powered Travel Companion</p>
-    </div>
-""", unsafe_allow_html=True)
 
-# Main content
-if not st.session_state.itinerary_generated:
-    # Initial query input
-    col1, col2, col3 = st.columns([1, 3, 1])
-    
-    with col2:
-        st.markdown('<div class="input-container">', unsafe_allow_html=True)
-        
+def render_nav():
+    left, right = st.columns([2, 3])
+    with left:
+        st.markdown('<div class="brand">🌍 Pack & Go</div>', unsafe_allow_html=True)
+    with right:
+        st.markdown('<div class="nav-row">', unsafe_allow_html=True)
+        n1, n2, n3 = st.columns(3)
+        if n1.button("Home", key="nav_home", type="secondary"):
+            go_home()
+            st.rerun()
+        if n2.button("Itineraries", key="nav_itin", type="secondary"):
+            st.session_state.page = "itineraries"
+            st.rerun()
+        if n3.button("Profile", key="nav_profile", type="secondary"):
+            st.session_state.page = "profile"
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_home():
+    st.markdown('<p class="hero-title">Hi there! Where to next? ✈️</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="hero-sub">Let AI create the perfect trip for you.</p>',
+        unsafe_allow_html=True,
+    )
+
+    search_col, btn_col = st.columns([5, 1.3])
+    with search_col:
         query = st.text_input(
-            "✈️ Where do you want to go?",
+            "Trip prompt",
             placeholder="e.g., 3-day trip to Paris, France",
-            label_visibility="visible",
-            key="initial_query"
+            label_visibility="collapsed",
+            key="home_query",
         )
-        
-        st.write("")  # Spacing
-        
-        if st.button("🚀 Generate My Itinerary", key="generate_btn"):
-            if query.strip():
-                with st.spinner("✨ Crafting your perfect itinerary..."):
-                    data, error = generate_itinerary_request(query)
-                    
-                    if error:
-                        st.error(error)
-                    elif data:
-                        st.session_state.current_itinerary = data
-                        st.session_state.structured_itinerary = data.get("structured", {})
-                        st.session_state.original_query = query
-                        st.session_state.itinerary_generated = True
-                        st.session_state.conversation_history = [
-                            {"role": "user", "content": query},
-                            {"role": "assistant", "content": "itinerary_generated"}
-                        ]
-                        st.rerun()
-            else:
-                st.warning("⚠️ Please enter a destination to generate an itinerary!")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+    with btn_col:
+        generate = st.button("Generate", key="generate_btn", width="stretch")
 
-else:
-    # Display current itinerary and feedback section
-    st.markdown("---")
-    st.markdown("<h2 style='text-align: center; color: white; margin: 2rem 0;'>📅 Your Personalized Itinerary</h2>", unsafe_allow_html=True)
-    
-    # Display itinerary
-    col1, col2, col3 = st.columns([1, 6, 1])
-    with col2:
-        itinerary_text = st.session_state.current_itinerary.get("itinerary", "")
-        display_itinerary(itinerary_text)
-        
-        # Download button
-        st.markdown("---")
-        st.download_button(
-            label="📥 Download Itinerary",
-            data=itinerary_text,
-            file_name="my_travel_itinerary.txt",
-            mime="text/plain",
-            use_container_width=True
-        )
-    
-    # Feedback section
-    st.markdown("---")
-    st.markdown("<h3 style='text-align: center; color: white; margin: 2rem 0;'>💬 Want to refine your itinerary?</h3>", unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 3, 1])
-    with col2:
-        st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
-        
-        # Show conversation history
-        if len(st.session_state.conversation_history) > 2:
-            st.markdown("<p style='font-weight: 600; color: #667eea; margin-bottom: 1rem;'>Conversation History:</p>", unsafe_allow_html=True)
-            
-            for i, msg in enumerate(st.session_state.conversation_history[2:], 1):
-                if msg["role"] == "user":
-                    st.markdown(f'<div class="conversation-bubble"><strong>You:</strong> {msg["content"]}</div>', unsafe_allow_html=True)
-                elif msg["role"] == "assistant" and msg["content"] != "itinerary_generated":
-                    st.markdown(f'<div class="conversation-bubble"><strong>Assistant:</strong> Updated itinerary based on your feedback!</div>', unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-        
-        feedback = st.text_area(
-            "Share your feedback:",
-            placeholder="e.g., 'I'd like more museum visits and fewer shopping areas' or 'Can we add more local food experiences?'",
-            height=100,
-            key="feedback_input"
-        )
-        
-        col_a, col_b = st.columns(2)
-        
-        with col_a:
-            if st.button("🔄 Regenerate Itinerary", key="regenerate_btn", use_container_width=True):
-                if feedback.strip():
-                    with st.spinner("✨ Updating your itinerary..."):
-                        # Use the new /refine endpoint with structured data
-                        try:
-                            response = requests.post(
-                                "http://127.0.0.1:8000/itinerary/refine",
-                                json={
-                                    "query": st.session_state.original_query,
-                                    "feedback": feedback,
-                                    "current_itinerary": st.session_state.structured_itinerary
-                                },
-                                timeout=30
-                            )
-                            
-                            if response.status_code == 200:
-                                data = response.json()
-                                st.session_state.current_itinerary = data
-                                st.session_state.structured_itinerary = data.get("structured", {})
-                                st.session_state.conversation_history.append({"role": "user", "content": feedback})
-                                st.session_state.conversation_history.append({"role": "assistant", "content": "itinerary_generated"})
-                                st.rerun()
-                            else:
-                                st.error("❌ Failed to update itinerary")
-                        except Exception as e:
-                            st.error(f"❌ Error: {str(e)}")
-                else:
-                    st.warning("⚠️ Please share your feedback before regenerating!")
-        
-        with col_b:
-            if st.button("🆕 Start New Trip", key="new_trip_btn", use_container_width=True):
-                st.session_state.itinerary_generated = False
-                st.session_state.current_itinerary = None
-                st.session_state.structured_itinerary = None
-                st.session_state.original_query = ""
-                st.session_state.conversation_history = []
+    if generate:
+        if not query.strip():
+            st.warning("Enter a destination, or pick a city below.")
+        else:
+            with st.spinner("Crafting your itinerary..."):
+                data, error = generate_itinerary_request(query.strip())
+            if error:
+                st.error(error)
+            elif data:
+                apply_generated(data, query.strip())
                 st.rerun()
-        
-        st.markdown('</div>', unsafe_allow_html=True)
 
-# Footer
-st.markdown("---")
-st.markdown("""
-    <div style='text-align: center; color: white; padding: 2rem; opacity: 0.9;'>
-        <p>✨ Powered by AI | Made with ❤️ for travelers</p>
-    </div>
-""", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-head"><h3>Popular Destinations</h3></div>',
+        unsafe_allow_html=True,
+    )
+
+    cols = st.columns(4)
+    for dest, col in zip(DESTINATIONS, cols):
+        with col:
+            st.image(dest["image"], width="stretch")
+            st.markdown(
+                f'<div class="dest-caption"><div><strong>{dest["city"]}</strong>'
+                f'<span>{dest["label"]}</span></div></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("→", key=f"dest_{dest['city']}", width="stretch", type="secondary"):
+                start_seed_chat(dest["city"])
+                st.rerun()
+
+    rec_l, rec_r = st.columns([4, 1])
+    with rec_l:
+        st.markdown(
+            '<div class="section-head"><h3>Your Recent Itineraries</h3></div>',
+            unsafe_allow_html=True,
+        )
+    with rec_r:
+        if st.button("View all", key="view_all_recent", type="secondary"):
+            st.session_state.page = "itineraries"
+            st.rerun()
+    recents = st.session_state.recent_itineraries[:3]
+    if not recents:
+        st.markdown(
+            '<p class="muted">No trips yet. Generate one or tap a destination.</p>',
+            unsafe_allow_html=True,
+        )
+    else:
+        for i, item in enumerate(recents):
+            st.markdown(
+                f'<div class="recent-card"><strong>{item["query"]}</strong></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("Open", key=f"recent_{i}", type="secondary"):
+                apply_generated(item["raw"], item["query"], save_recent=False)
+                st.rerun()
+
+
+def render_chat_seed():
+    city = st.session_state.selected_city or "this city"
+    st.markdown(f'<p class="hero-title">Let\'s tailor {city}</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="hero-sub">A couple of quick questions, then we will build the trip.</p>',
+        unsafe_allow_html=True,
+    )
+
+    for msg in st.session_state.seed_messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    user_text = st.chat_input("Your answer...")
+    if not user_text:
+        return
+
+    st.session_state.seed_messages.append({"role": "user", "content": user_text})
+
+    if looks_complete(user_text):
+        query = user_text.strip()
+        if st.session_state.selected_city and st.session_state.selected_city.lower() not in query.lower():
+            query = f"{query} in {st.session_state.selected_city}"
+        with st.spinner("Crafting your itinerary..."):
+            data, error = generate_itinerary_request(query)
+        if error:
+            st.session_state.seed_messages.append({"role": "assistant", "content": error})
+            st.rerun()
+        elif data:
+            apply_generated(data, query)
+            st.rerun()
+        return
+
+    if st.session_state.seed_step == 0:
+        st.session_state.seed_days = parse_days(user_text)
+        st.session_state.seed_step = 1
+        st.session_state.seed_messages.append(
+            {
+                "role": "assistant",
+                "content": "Any focus — food, culture, outdoors, nightlife, or a mix?",
+            }
+        )
+        st.rerun()
+        return
+
+    st.session_state.seed_vibe = parse_vibe(user_text)
+    query = compose_query(
+        st.session_state.selected_city,
+        st.session_state.seed_days or "3-day",
+        st.session_state.seed_vibe,
+    )
+    with st.spinner("Crafting your itinerary..."):
+        data, error = generate_itinerary_request(query)
+    if error:
+        st.session_state.seed_messages.append({"role": "assistant", "content": error})
+        st.rerun()
+    elif data:
+        apply_generated(data, query)
+        st.rerun()
+
+
+def render_itinerary():
+    top_l, top_r = st.columns([4, 1])
+    with top_l:
+        st.markdown('<p class="hero-title">Your itinerary</p>', unsafe_allow_html=True)
+        st.markdown(
+            f'<p class="hero-sub">{st.session_state.original_query}</p>',
+            unsafe_allow_html=True,
+        )
+    with top_r:
+        if st.button("New trip", key="new_trip", width="stretch"):
+            go_home()
+            st.rerun()
+
+    left, right = st.columns([2, 1], gap="large")
+    with left:
+        itinerary_text = ""
+        if st.session_state.current_itinerary:
+            itinerary_text = st.session_state.current_itinerary.get("itinerary", "")
+        if st.session_state.last_modification:
+            st.success(st.session_state.last_modification)
+        display_itinerary(itinerary_text)
+        if itinerary_text:
+            st.download_button(
+                label="Download itinerary",
+                data=itinerary_text,
+                file_name="my_travel_itinerary.txt",
+                mime="text/plain",
+                width="stretch",
+            )
+
+    with right:
+        st.markdown("**Refine with chat**")
+        st.caption("Try: Change Day 2 morning to something more cultural")
+        for msg in st.session_state.conversation_history:
+            if msg.get("content") == "itinerary_generated":
+                continue
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+        feedback = st.chat_input("Tell me what to change...")
+        if feedback:
+            with st.spinner("Updating your itinerary..."):
+                data, error = refine_itinerary_request(feedback)
+            if error:
+                st.session_state.conversation_history.append(
+                    {"role": "user", "content": feedback}
+                )
+                st.session_state.conversation_history.append(
+                    {"role": "assistant", "content": error}
+                )
+                st.rerun()
+            else:
+                st.session_state.current_itinerary = data
+                st.session_state.structured_itinerary = data.get("structured", {})
+                summary = format_modification(data.get("modification"))
+                st.session_state.last_modification = summary
+                for item in st.session_state.recent_itineraries:
+                    if item.get("query") == st.session_state.original_query:
+                        item["raw"] = data
+                        item["structured"] = data.get("structured", {})
+                        item["formatted"] = data.get("itinerary", "")
+                        break
+                st.session_state.conversation_history.append(
+                    {"role": "user", "content": feedback}
+                )
+                st.session_state.conversation_history.append(
+                    {
+                        "role": "assistant",
+                        "content": summary or "Updated itinerary based on your feedback.",
+                    }
+                )
+                st.rerun()
+
+
+def render_itineraries():
+    st.markdown('<p class="hero-title">Your itineraries</p>', unsafe_allow_html=True)
+    recents = st.session_state.recent_itineraries
+    if not recents:
+        st.markdown(
+            '<p class="muted">Nothing saved this session yet.</p>',
+            unsafe_allow_html=True,
+        )
+        return
+    for i, item in enumerate(recents):
+        st.markdown(
+            f'<div class="recent-card"><strong>{item["query"]}</strong></div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Open", key=f"itin_open_{i}", type="secondary"):
+            apply_generated(item["raw"], item["query"], save_recent=False)
+            st.rerun()
+
+
+def render_profile():
+    st.markdown('<p class="hero-title">Profile</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="muted">Local demo only — no accounts yet. Trips live in this browser session.</p>',
+        unsafe_allow_html=True,
+    )
+
+
+render_nav()
+page = st.session_state.page
+if page == "chat_seed":
+    render_chat_seed()
+elif page == "itinerary":
+    render_itinerary()
+elif page == "itineraries":
+    render_itineraries()
+elif page == "profile":
+    render_profile()
+else:
+    render_home()

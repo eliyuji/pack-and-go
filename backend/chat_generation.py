@@ -1,75 +1,65 @@
-from typing import TypedDict, Annotated, List, Dict, Any
+from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 import json
 from semantic_search import retrieve_context
 from backend.database.attraction_query import get_places_for_city
+from backend.itinerary_patch import (
+    extract_json,
+    modification_summary,
+    normalize_time_slot,
+    patch_activity,
+    patch_day,
+)
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Initialize LLM
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+
 llm = ChatGroq(
     api_key=os.getenv("GROQ_KEY"),
-    model="llama-3.1-8b-instant",
+    model=GROQ_MODEL,
     temperature=0.6
 )
 
-# Define the state schema
+
 class ItineraryState(TypedDict):
-    """State that gets passed through the graph"""
-    # User inputs
     original_query: str
     feedback: str
-    
-    # Current itinerary
-    itinerary: Dict[str, Any]  # The full structured itinerary
-    
-    # Conversation context
+    itinerary: Dict[str, Any]
     messages: List[Any]
-    
-    # Retrieved context
     semantic_context: str
     structured_places: List[Dict]
-    
-    # Intent understanding
-    modification_intent: Dict[str, Any]  # What the user wants to change
-    
-    # Output
+    modification_intent: Dict[str, Any]
     final_itinerary: Dict[str, Any]
+    error: str
 
 
 def retrieve_travel_context(state: ItineraryState) -> ItineraryState:
-    """Node 1: Retrieve semantic and structured context"""
     query = state["original_query"]
-    
-    # Semantic search
+
     context = retrieve_context(query, k=10)
     context_text = "\n\n".join([f"From {c['file_name']}: {c['chunk']}" for c in context])
-    
-    # Structured places from database
+
     city_name = (query.split(" in ")[-1].strip().title() if " in " in query else None)
     structured_places = get_places_for_city(city_name) if city_name else []
-    
+
     state["semantic_context"] = context_text
     state["structured_places"] = structured_places
-    
     return state
 
 
 def understand_modification_intent(state: ItineraryState) -> ItineraryState:
-    """Node 2: Understand what the user wants to modify"""
     feedback = state.get("feedback", "")
     current_itinerary = state.get("itinerary", {})
-    
+
     if not feedback:
-        # No feedback means initial generation
         state["modification_intent"] = {"type": "generate_new"}
         return state
-    
-    # Use LLM to understand the intent
+
     intent_prompt = f"""
 You are analyzing user feedback about a travel itinerary.
 
@@ -92,69 +82,63 @@ Examples:
 
 Return ONLY valid JSON, no markdown.
 """
-    
+
     response = llm.invoke([SystemMessage(content=intent_prompt)])
-    
-    try:
-        # Extract JSON from response
-        content = response.content.strip()
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        intent = json.loads(content)
-        state["modification_intent"] = intent
-    except:
-        # Fallback: treat as general regeneration
-        state["modification_intent"] = {
-            "type": "add_preference",
-            "preference": feedback
-        }
-    
+    intent = extract_json(response.content)
+    if not isinstance(intent, dict) or not intent.get("type"):
+        # Keep the current trip; treat unclear feedback as a preference tweak.
+        intent = {"type": "add_preference", "preference": feedback}
+    if intent.get("target_time"):
+        intent["target_time"] = normalize_time_slot(intent["target_time"])
+    state["modification_intent"] = intent
     return state
 
 
 def generate_or_modify_itinerary(state: ItineraryState) -> ItineraryState:
-    """Node 3: Generate new itinerary or modify existing one"""
-    intent = state["modification_intent"]
-    current_itinerary = state.get("itinerary", {})
-    
-    if intent["type"] == "generate_new":
-        # Initial generation
-        itinerary = generate_full_itinerary(state)
+    intent = state.get("modification_intent") or {}
+    current_itinerary = state.get("itinerary") or {}
+    intent_type = intent.get("type")
+
+    try:
+        if intent_type == "generate_new":
+            itinerary = generate_full_itinerary(state)
+        elif intent_type == "modify_activity":
+            if not intent.get("target_day") or not intent.get("target_time"):
+                raise ValueError("Could not tell which day and time slot to change.")
+            itinerary = modify_specific_activity(state, current_itinerary, intent)
+        elif intent_type == "modify_day":
+            if not intent.get("target_day"):
+                raise ValueError("Could not tell which day to change.")
+            itinerary = modify_entire_day(state, current_itinerary, intent)
+        elif intent_type in ("add_preference", "regenerate_all"):
+            itinerary = regenerate_with_preferences(state, current_itinerary, intent)
+            if not itinerary or not itinerary.get("itinerary"):
+                raise ValueError("Could not apply that preference. The current itinerary was left unchanged.")
+        else:
+            raise ValueError("Could not understand that change request.")
+
+        if not itinerary or not itinerary.get("itinerary"):
+            raise ValueError("Failed to produce a valid itinerary.")
+
         state["itinerary"] = itinerary
         state["final_itinerary"] = itinerary
-    
-    elif intent["type"] == "modify_activity" and intent.get("target_day"):
-        # Targeted modification
-        itinerary = modify_specific_activity(state, current_itinerary, intent)
-        state["itinerary"] = itinerary
-        state["final_itinerary"] = itinerary
-    
-    elif intent["type"] == "modify_day" and intent.get("target_day"):
-        # Modify entire day
-        itinerary = modify_entire_day(state, current_itinerary, intent)
-        state["itinerary"] = itinerary
-        state["final_itinerary"] = itinerary
-    
-    else:
-        # General preference adjustment - regenerate with preferences
-        itinerary = regenerate_with_preferences(state, current_itinerary, intent)
-        state["itinerary"] = itinerary
-        state["final_itinerary"] = itinerary
-    
+        state["error"] = ""
+    except ValueError as exc:
+        state["error"] = str(exc)
+        state["final_itinerary"] = current_itinerary
     return state
 
 
 def generate_full_itinerary(state: ItineraryState) -> Dict[str, Any]:
-    """Generate a brand new itinerary"""
     query = state["original_query"]
     context_text = state["semantic_context"]
     structured_places = state["structured_places"]
-    
+
     structured_text = "\n".join(
-        f"{p['category'].capitalize()} - {p['name']} ({p['district']}, {p['rating']}⭐)" 
+        f"{p['category'].capitalize()} - {p['name']} ({p['district']}, {p['rating']}⭐)"
         for p in structured_places
     )
-    
+
     system_prompt = """
 You are a travel itinerary generator. Return ONLY valid JSON with this structure:
 {
@@ -171,7 +155,7 @@ You are a travel itinerary generator. Return ONLY valid JSON with this structure
 }
 No markdown, no extra text.
 """
-    
+
     user_prompt = f"""
 Generate a travel itinerary for: {query}
 
@@ -181,91 +165,98 @@ Travel Context:
 Local Places:
 {structured_text}
 """
-    
+
     response = llm.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt)
     ])
-    
-    return extract_json(response.content)
+    parsed = extract_json(response.content)
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def modify_specific_activity(state: ItineraryState, current: Dict, intent: Dict) -> Dict[str, Any]:
-    """Modify a specific activity in a specific time slot"""
+    """Ask the LLM for one replacement slot, then patch it in Python."""
     target_day = intent["target_day"]
     target_time = intent.get("target_time")
     preference = intent.get("preference", "")
-    
     context_text = state["semantic_context"]
-    structured_places = state["structured_places"]
-    
+
     system_prompt = """
-You are modifying a specific activity in a travel itinerary.
-Return the COMPLETE updated itinerary as JSON (same structure as input).
-Only change the specified activity, keep everything else the same.
+You are replacing ONE activity in a travel itinerary.
+Return ONLY valid JSON for the replacement slot:
+{"time": "Morning", "activity": "...", "food": "..."}
+No markdown, no other days, no extra text.
 """
-    
+
     user_prompt = f"""
-Current Itinerary:
+Current itinerary:
 {json.dumps(current, indent=2)}
 
-Modification Request:
-- Day: {target_day}
-- Time: {target_time}
-- User wants: {preference}
+Replace Day {target_day} {target_time} with something that matches: {preference}
 
-Available context:
+Travel context:
 {context_text[:1000]}
-
-Return the FULL updated itinerary in the same JSON format.
 """
-    
+
     response = llm.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt)
     ])
-    
-    return extract_json(response.content) or current
+    new_activity = extract_json(response.content)
+    if not isinstance(new_activity, dict) or not new_activity.get("activity"):
+        raise ValueError("Could not generate a replacement activity.")
+    return patch_activity(current, target_day, target_time, new_activity)
 
 
 def modify_entire_day(state: ItineraryState, current: Dict, intent: Dict) -> Dict[str, Any]:
-    """Regenerate an entire day"""
+    """Ask the LLM for one replacement day, then patch it in Python."""
     target_day = intent["target_day"]
     preference = intent.get("preference", "")
-    
+    context_text = state["semantic_context"]
+
     system_prompt = """
-You are regenerating one day of a travel itinerary.
-Return the COMPLETE itinerary with the updated day.
-Keep all other days exactly the same.
+You are replacing ONE day in a travel itinerary.
+Return ONLY valid JSON for that day:
+{
+  "day": 2,
+  "activities": [
+    {"time": "Morning", "activity": "...", "food": "..."},
+    {"time": "Afternoon", "activity": "...", "food": "..."},
+    {"time": "Evening", "activity": "...", "food": "..."}
+  ]
+}
+No markdown, no other days, no extra text.
 """
-    
+
     user_prompt = f"""
-Current Itinerary:
+Current itinerary:
 {json.dumps(current, indent=2)}
 
-Regenerate Day {target_day} with these preferences:
-{preference}
+Regenerate Day {target_day} with these preferences: {preference}
 
-Return the FULL updated itinerary.
+Travel context:
+{context_text[:1000]}
 """
-    
+
     response = llm.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt)
     ])
-    
-    return extract_json(response.content) or current
+    new_day = extract_json(response.content)
+    if not new_day:
+        raise ValueError(f"Could not generate a replacement for Day {target_day}.")
+    return patch_day(current, target_day, new_day)
 
 
 def regenerate_with_preferences(state: ItineraryState, current: Dict, intent: Dict) -> Dict[str, Any]:
-    """Regenerate entire itinerary with new preferences"""
     preference = intent.get("preference", "")
-    
+
     system_prompt = """
 You are updating a travel itinerary based on user preferences.
-Return the complete updated itinerary as JSON.
+Return the complete updated itinerary as JSON with the same number of days.
+Each day must have Morning, Afternoon, and Evening activities with food.
 """
-    
+
     user_prompt = f"""
 Current Itinerary:
 {json.dumps(current, indent=2)}
@@ -278,77 +269,46 @@ Context:
 
 Update the itinerary to match these preferences while keeping the same structure and trip length.
 """
-    
+
     response = llm.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt)
     ])
-    
-    return extract_json(response.content) or current
+    parsed = extract_json(response.content)
+    if isinstance(parsed, dict) and parsed.get("itinerary"):
+        return parsed
+    return current
 
 
-def extract_json(text: str) -> Dict[str, Any]:
-    """Extract JSON from LLM response"""
-    import re
-    
-    # Try fenced blocks
-    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except:
-            pass
-    
-    # Try any {...}
-    match = re.search(r"(\{[\s\S]*\})", text)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except:
-            pass
-    
-    # Try direct parse
-    try:
-        return json.loads(text)
-    except:
-        return {}
-
-
-# Build the LangGraph
 def create_itinerary_graph():
-    """Create the stateful LangGraph workflow"""
     workflow = StateGraph(ItineraryState)
-    
-    # Add nodes
     workflow.add_node("retrieve_context", retrieve_travel_context)
     workflow.add_node("understand_intent", understand_modification_intent)
     workflow.add_node("generate_modify", generate_or_modify_itinerary)
-    
-    # Define edges
     workflow.set_entry_point("retrieve_context")
     workflow.add_edge("retrieve_context", "understand_intent")
     workflow.add_edge("understand_intent", "generate_modify")
     workflow.add_edge("generate_modify", END)
-    
     return workflow.compile()
 
 
-# Create the graph instance
 itinerary_graph = create_itinerary_graph()
 
 
-# API endpoint function
-def process_itinerary_request(query: str, feedback: str = "", current_itinerary: Dict = None):
+def process_itinerary_request(
+    query: str,
+    feedback: str = "",
+    current_itinerary: Optional[Dict] = None,
+) -> Dict[str, Any]:
     """
-    Main function to call from FastAPI endpoint
-    
-    Args:
-        query: Original travel query
-        feedback: User feedback for modifications (empty for initial generation)
-        current_itinerary: Existing itinerary to modify (None for initial generation)
-    
+    Run the LangGraph workflow.
+
     Returns:
-        Dict with updated itinerary
+        {
+          "structured": <itinerary dict>,
+          "modification": {"type", "target_day", "target_time"},
+          "error": optional str
+        }
     """
     initial_state = {
         "original_query": query,
@@ -358,10 +318,15 @@ def process_itinerary_request(query: str, feedback: str = "", current_itinerary:
         "semantic_context": "",
         "structured_places": [],
         "modification_intent": {},
-        "final_itinerary": {}
+        "final_itinerary": {},
+        "error": "",
     }
-    
-    # Run the graph
+
     result = itinerary_graph.invoke(initial_state)
-    
-    return result["final_itinerary"]
+    payload = {
+        "structured": result.get("final_itinerary") or current_itinerary or {},
+        "modification": modification_summary(result.get("modification_intent") or {}),
+    }
+    if result.get("error"):
+        payload["error"] = result["error"]
+    return payload

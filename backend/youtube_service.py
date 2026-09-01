@@ -2,26 +2,36 @@ from googleapiclient.discovery import build
 from backend.cloud_storage import upload_transcript
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 from youtube_transcript_api.proxies import WebshareProxyConfig
-from backend.db import SessionLocal
+from backend.db import get_session
 from models import YouTubeTranscript
-from dotenv import load_dotenv
+import backend.env  # noqa: F401
 import os
 import torch
 import whisper
 import yt_dlp
 
-load_dotenv()
 API_KEY = os.getenv("YOUTUBE_API_KEY")
 BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
-#API Setup
 YOUTUBE_API_SERVICE_NAME = "youtube"
 YOUTUBE_API_VERSION = "v3"
 
+
+def _require_youtube_key() -> str:
+    if not API_KEY:
+        raise ValueError(
+            "YOUTUBE_API_KEY is not set in .env. "
+            "Enable YouTube Data API v3 and create an API key in Google Cloud."
+        )
+    return API_KEY
+
+
 def search_youtube(query, max_results=10):
-    
-    #Service Client
-    youtube = build(YOUTUBE_API_SERVICE_NAME,YOUTUBE_API_VERSION, developerKey=API_KEY)
+    youtube = build(
+        YOUTUBE_API_SERVICE_NAME,
+        YOUTUBE_API_VERSION,
+        developerKey=_require_youtube_key(),
+    )
     
     #Search Request
     request = youtube.search().list(
@@ -46,13 +56,17 @@ def get_captions_transcript(vid_id: str) -> str | None:
     Returns full transcription if available, else None.
     """
     try:
-        ytt_api = YouTubeTranscriptApi(
-            proxy_config=WebshareProxyConfig(
-                proxy_username="wkfeugnw",
-                proxy_password="hll54hqoa6a8",
-
+        proxy_username = os.getenv("WEBSHARE_PROXY_USERNAME")
+        proxy_password = os.getenv("WEBSHARE_PROXY_PASSWORD")
+        if proxy_username and proxy_password:
+            ytt_api = YouTubeTranscriptApi(
+                proxy_config=WebshareProxyConfig(
+                    proxy_username=proxy_username,
+                    proxy_password=proxy_password,
+                )
             )
-        )
+        else:
+            ytt_api = YouTubeTranscriptApi()
         fetched_transcript = ytt_api.fetch(vid_id)  # Returns FetchedTranscript object
 
         # Join all snippet texts into one string
@@ -111,7 +125,11 @@ def gen_transcript(vid_url:str, vid_id:str) -> str:
         return whisper_get_transcript(vid_url)
 
 def get_video_metadata(video_id: str):
-    youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=API_KEY)
+    youtube = build(
+        YOUTUBE_API_SERVICE_NAME,
+        YOUTUBE_API_VERSION,
+        developerKey=_require_youtube_key(),
+    )
     
     request = youtube.videos().list(
         part="snippet",
@@ -132,12 +150,16 @@ def save_transcript_and_metadata(video_id: str, title: str, url: str, tags: list
     """
     Upload transcript to GCS and save metadata to Postgres.
     """
-    # Upload to GCS
+    if not BUCKET_NAME:
+        raise ValueError(
+            "GCS_BUCKET_NAME is not set in .env. "
+            "Create a bucket and a service account key, then set GOOGLE_APPLICATION_CREDENTIALS."
+        )
+
     file_name = f"{video_id}.txt"
     gcs_uri = upload_transcript(file_name, transcript, BUCKET_NAME)
 
-    # Save metadata in Postgres
-    session = SessionLocal()
+    session = get_session()
     try:
         record = YouTubeTranscript(
             video_id=video_id,

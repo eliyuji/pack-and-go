@@ -1,7 +1,9 @@
+from pathlib import Path
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 
 Base = declarative_base()
+DB_PATH = Path(__file__).resolve().parent / "travel_data.db"
 
 class City(Base):
     __tablename__ = "cities"
@@ -31,7 +33,7 @@ class Place(Base):
     district = relationship("District", back_populates="places")
     place_id = Column(String, unique=True)
 
-engine = create_engine("sqlite:///travel_data.db")
+engine = create_engine(f"sqlite:///{DB_PATH}")
 Base.metadata.create_all(engine)
 
 Session= sessionmaker(bind=engine)

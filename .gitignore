@@ -1,5 +1,3 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
 # dependencies
 /node_modules
 /.pnp
@@ -30,8 +28,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files
+.env
+.env.*
+!.env.example
 
 # vercel
 .vercel
@@ -40,7 +40,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-#Virtual Environments
+# virtual environments
 venv/
 venv310/
 
@@ -48,10 +48,18 @@ venv310/
 frontend/.next/
 frontend/node_modules/
 
-__pycache__/
+# Python
+**/__pycache__/
 *.pyc
+*.pyo
 
+# generated / local artifacts
 faiss_index.bin
+location_cache.json
+metadata.pkl
+*.webm
+temp_audio.*
+/travel_data.db
 
-
-
+# GCP service account keys
+packandgo-*.json

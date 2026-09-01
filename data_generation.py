@@ -1,10 +1,12 @@
+import argparse
 from backend.youtube_service import (
     search_youtube,
     gen_transcript,
     get_video_metadata,
     save_transcript_and_metadata
 )
-from backend.db import get_connection  # <-- import your DB helper
+from backend.db import get_connection
+import backend.env  # noqa: F401
 
 
 # --- DB check helper ---
@@ -22,10 +24,9 @@ def transcript_exists(video_id: str) -> bool:
         return False
 
 
-def process_locations(locations: list[str]):
+def process_locations(locations: list[str], max_results: int = 5):
     all_video_ids = []
 
-    # Travel-related query templates
     query_templates = [
         "{} travel",
         "{} vlog",
@@ -36,15 +37,14 @@ def process_locations(locations: list[str]):
     ]
 
     for location in locations:
-        print(f"\n🔍 Searching videos for: {location}")
+        print(f"\nSearching videos for: {location}")
 
-        # Expand templates into actual queries
         queries = [template.format(location) for template in query_templates]
 
         for query in queries:
-            print(f"   📡 Running query: {query}")
+            print(f"   Running query: {query}")
             try:
-                videos = search_youtube(query, max_results=10)
+                videos = search_youtube(query, max_results=max_results)
             except Exception as e:
                 print(f" Error searching YouTube for {query}: {e}")
                 continue
@@ -55,31 +55,27 @@ def process_locations(locations: list[str]):
                     continue
                 url = f"https://www.youtube.com/watch?v={video_id}"
 
-                # --- Skip if already in DB ---
                 if transcript_exists(video_id):
-                    print(f"⏩ Skipping {video_id} (already processed)")
+                    print(f"Skipping {video_id} (already processed)")
                     continue
 
                 all_video_ids.append(video_id)
-                print(f"📹 Processing: {v['title']} ({video_id})")
+                print(f"Processing: {v['title']} ({video_id})")
 
                 try:
-                    # Step 1: Get transcript
                     transcript = gen_transcript(url, video_id)
                     if not transcript:
-                        print(f"⚠️ No transcript for {video_id}, skipping.")
+                        print(f"No transcript for {video_id}, skipping.")
                         continue
 
-                    # Step 2: Get metadata
                     metadata = get_video_metadata(video_id)
                     if not metadata:
-                        print(f"⚠️ No metadata for {video_id}, skipping.")
+                        print(f"No metadata for {video_id}, skipping.")
                         continue
 
                     title = metadata["title"]
                     tags = metadata.get("tags", [])
 
-                    # Step 3: Save
                     save_transcript_and_metadata(
                         video_id=video_id,
                         title=title,
@@ -87,21 +83,31 @@ def process_locations(locations: list[str]):
                         tags=tags,
                         transcript=transcript,
                     )
-                    print(f"✅ Saved transcript + metadata for {title}")
+                    print(f"Saved transcript + metadata for {title}")
 
                 except Exception as e:
-                    print(f"❌ Error processing video {video_id}: {e}")
+                    print(f"Error processing video {video_id}: {e}")
                     continue
 
     return all_video_ids
 
 if __name__ == "__main__":
-    locations = ["New Zealand" ]
-    #already checked locations --> "Hong Kong", "Macau", "Taipei",
-    # "Shenzhen", "San Francisco", "Seoul"
-    # "Singapore", "Malaysia", "Rome", "London", "Barcelona", "Dubai", "Australia", "Sydney",
-    #"Amsterdam", "Bora Bora", "Las Vegas", "Miami", "Los Angles", "LA", "Costa Rica", "Puerto Rico", 
-    video_ids = process_locations(locations)
+    parser = argparse.ArgumentParser(
+        description="Search YouTube travel videos, transcribe them, and store text in GCS + metadata in Postgres."
+    )
+    parser.add_argument(
+        "locations",
+        nargs="+",
+        help='City or region names, e.g. "Taipei" "Hong Kong"',
+    )
+    parser.add_argument(
+        "--max-results",
+        type=int,
+        default=5,
+        help="Videos per search query (default 5). Each location runs 6 query templates.",
+    )
+    args = parser.parse_args()
 
-    print("\n🎉 Processing complete!")
+    video_ids = process_locations(args.locations, max_results=args.max_results)
+    print("\nProcessing complete!")
     print("All collected video IDs:", video_ids)

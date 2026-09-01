@@ -131,6 +131,7 @@ Rules:
 load_dotenv()
 
 KEY = os.getenv("GROQ_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 client = Groq(api_key=KEY)
 load_index()
@@ -232,8 +233,7 @@ def generate_itinerary(query, k=10, max_retries=2):
 
     # Step 3: call LLM
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant" \
-        "",
+        model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt}
@@ -255,7 +255,7 @@ def generate_itinerary(query, k=10, max_retries=2):
             f"Previous (invalid) response:\n{raw_output}\n\nReturn only the corrected JSON now."
         )
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": fix_prompt}

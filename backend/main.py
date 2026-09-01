@@ -123,38 +123,40 @@ def generate_initial_itinerary_v2(request: QueryReq):
         return get_itinerary(request)
     
     try:
-        # Use LangGraph to generate
-        result = process_itinerary_request(
+        payload = process_itinerary_request(
             query=request.query,
             feedback="",
             current_itinerary=None
         )
-        
-        if not result or "error" in result:
-            raise HTTPException(status_code=500, detail="Failed to generate itinerary")
-        
-        # Post-process (normalize times, ensure food)
-        result = normalize_activity_times(result)
-        # Note: You may want to pass structured_places to ensure_food
+
+        if payload.get("error") or not payload.get("structured"):
+            raise HTTPException(
+                status_code=500,
+                detail=payload.get("error") or "Failed to generate itinerary",
+            )
+
+        result = normalize_activity_times(payload["structured"])
         result = ensure_food(result, [])
-        
-        # Format for frontend display
+
         formatted_days = []
         for day in result.get("itinerary", []):
             day_num = day.get("day", "?")
             activities = day.get("activities", [])
             formatted = format_itinerary(activities)
             formatted_days.append(f"\n🗓️ Day {day_num}\n{formatted}")
-        
+
         formatted_text = "\n".join(formatted_days)
-        
+
         return {
             "itinerary": formatted_text,
-            "structured": result,  # Keep structured version for modifications
+            "structured": result,
             "sources": result.get("sources", []),
+            "modification": payload.get("modification"),
             "version": "v2-langgraph"
         }
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -177,38 +179,42 @@ def refine_itinerary(request: FeedbackRequest):
         return get_itinerary(QueryReq(query=combined_query))
     
     try:
-        # Use LangGraph to intelligently modify
-        result = process_itinerary_request(
+        payload = process_itinerary_request(
             query=request.query,
             feedback=request.feedback,
             current_itinerary=request.current_itinerary
         )
-        
-        if not result or "error" in result:
+
+        if payload.get("error"):
+            raise HTTPException(status_code=400, detail=payload["error"])
+
+        result = payload.get("structured") or {}
+        if not result.get("itinerary"):
             raise HTTPException(status_code=500, detail="Failed to refine itinerary")
-        
-        # Post-process
+
         result = normalize_activity_times(result)
         result = ensure_food(result, [])
-        
-        # Format for frontend display
+
         formatted_days = []
         for day in result.get("itinerary", []):
             day_num = day.get("day", "?")
             activities = day.get("activities", [])
             formatted = format_itinerary(activities)
             formatted_days.append(f"\n🗓️ Day {day_num}\n{formatted}")
-        
+
         formatted_text = "\n".join(formatted_days)
-        
+
         return {
             "itinerary": formatted_text,
-            "structured": result,  # Keep structured version for future modifications
+            "structured": result,
             "sources": result.get("sources", []),
+            "modification": payload.get("modification"),
             "version": "v2-langgraph",
             "modification_applied": True
         }
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
