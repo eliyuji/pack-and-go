@@ -8,6 +8,7 @@ from backend.youtube_service import get_video_metadata
 from backend.youtube_service import save_transcript_and_metadata
 from rag_pipeline import generate_itinerary, format_itinerary, reorder_itinerary, guess_time_slot
 from rag_pipeline import normalize_activity_times, ensure_food
+from backend.query_parse import places_for_query
 
 # Import LangGraph functions
 try:
@@ -136,7 +137,7 @@ def generate_initial_itinerary_v2(request: QueryReq):
             )
 
         result = normalize_activity_times(payload["structured"])
-        result = ensure_food(result, [])
+        result = ensure_food(result, places_for_query(request.query))
 
         formatted_days = []
         for day in result.get("itinerary", []):
@@ -193,7 +194,7 @@ def refine_itinerary(request: FeedbackRequest):
             raise HTTPException(status_code=500, detail="Failed to refine itinerary")
 
         result = normalize_activity_times(result)
-        result = ensure_food(result, [])
+        result = ensure_food(result, places_for_query(request.query))
 
         formatted_days = []
         for day in result.get("itinerary", []):

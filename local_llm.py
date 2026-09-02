@@ -16,6 +16,11 @@ def extract_locations_flan_batch(chunks, batch_size=4, max_input_length=512):
     Run FLAN-T5 on chunks in batches, showing progress.
     Uses CPU, keeps memory low, and handles malformed outputs.
     """
+    if isinstance(chunks, str):
+        chunks = [chunks]
+    elif not isinstance(chunks, (list, tuple)):
+        raise TypeError(f"chunks must be a list of strings, got {type(chunks).__name__}")
+
     all_results = []
     num_batches = (len(chunks) + batch_size - 1) // batch_size
 

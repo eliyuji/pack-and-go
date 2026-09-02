@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 import json
 from semantic_search import retrieve_context
 from backend.database.attraction_query import get_places_for_city
+from backend.query_parse import extract_city
 from backend.itinerary_patch import (
     extract_json,
     modification_summary,
@@ -44,7 +45,7 @@ def retrieve_travel_context(state: ItineraryState) -> ItineraryState:
     context = retrieve_context(query, k=10)
     context_text = "\n\n".join([f"From {c['file_name']}: {c['chunk']}" for c in context])
 
-    city_name = (query.split(" in ")[-1].strip().title() if " in " in query else None)
+    city_name = extract_city(query)
     structured_places = get_places_for_city(city_name) if city_name else []
 
     state["semantic_context"] = context_text
@@ -166,11 +167,28 @@ Local Places:
 {structured_text}
 """
 
-    response = llm.invoke([
+    messages = [
         SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt)
-    ])
-    parsed = extract_json(response.content)
+        HumanMessage(content=user_prompt),
+    ]
+    parsed = {}
+    raw = ""
+    for attempt in range(3):
+        response = llm.invoke(messages)
+        raw = response.content if isinstance(response.content, str) else str(response.content or "")
+        parsed = extract_json(raw)
+        if isinstance(parsed, dict) and parsed.get("itinerary"):
+            return parsed
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(
+                content=(
+                    "The previous response was not valid itinerary JSON. "
+                    "Rewrite ONLY valid JSON with an 'itinerary' array. No markdown.\n\n"
+                    f"Previous response:\n{raw[:4000]}"
+                )
+            ),
+        ]
     return parsed if isinstance(parsed, dict) else {}
 
 

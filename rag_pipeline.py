@@ -2,6 +2,8 @@ from groq import Groq
 import json
 from semantic_search import load_index, retrieve_context
 from backend.database.attraction_query import get_places_for_city
+from backend.query_parse import extract_city
+from backend.itinerary_patch import normalize_time_slot
 from dotenv import load_dotenv
 import os
 import random
@@ -26,14 +28,14 @@ def reorder_itinerary(activities):
     return ordered
 
 def normalize_activity_times(itinerary):
-    """
-    Corrects mislabeled activity times (e.g., night markets under 'Afternoon').
-    """
+    """Fill missing activity times only. Do not move an explicit Morning/Afternoon/Evening."""
     for day in itinerary.get("itinerary", []):
-        for activity in day["activities"]:
-            act_text = activity["activity"].lower()
-
-            # Detect obvious night-time attractions
+        for activity in day.get("activities", []):
+            existing = normalize_time_slot(activity.get("time"))
+            if existing:
+                activity["time"] = existing
+                continue
+            act_text = (activity.get("activity") or "").lower()
             if any(word in act_text for word in ACTIVITY_TIME_RULES["evening"]):
                 activity["time"] = "Evening"
             elif any(word in act_text for word in ACTIVITY_TIME_RULES["morning"]):
@@ -41,16 +43,18 @@ def normalize_activity_times(itinerary):
             elif any(word in act_text for word in ACTIVITY_TIME_RULES["afternoon"]):
                 activity["time"] = "Afternoon"
             else:
-                # Default fallback if uncertain
                 activity["time"] = "Afternoon"
     return itinerary
 
 def format_itinerary(activities):
-    """Format itinerary including food suggestions."""
+    """Format itinerary including food suggestions. Prefer structured time over keywords."""
     grouped = {"morning": [], "afternoon": [], "evening": []}
     for a in activities:
-        slot = guess_time_slot(a["activity"])
-        grouped[slot].append(a)
+        slot = normalize_time_slot(a.get("time"))
+        key = slot.lower() if slot else guess_time_slot(a.get("activity", ""))
+        if key not in grouped:
+            key = "afternoon"
+        grouped[key].append(a)
 
     output = []
     for slot in ["morning", "afternoon", "evening"]:
@@ -223,7 +227,7 @@ def generate_itinerary(query, k=10, max_retries=2):
     context_text = "\n\n".join([f"From {c['file_name']}: {c['chunk']}" for c in context])
 
     # 2) structured places from SQL
-    city_name = (query.split(" in ")[-1].strip().title() if " in " in query else None)
+    city_name = extract_city(query)
     structured_places = get_places_for_city(city_name) if city_name else []
     structured_text = "\n".join(f"{p['category'].capitalize()} - {p['name']} ({p['district']}, {p['rating']}⭐)" for p in structured_places)
 

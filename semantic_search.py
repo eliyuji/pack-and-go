@@ -192,22 +192,25 @@ def retrieve_context(query, k= 10, require_locations=False):
     query_embeddings = model.encode([query]).astype("float32")
     distances, indices = index.search(query_embeddings, k)
 
-    # Extract location(s) from the query
-    query_locs = extract_locations_flan_batch(query, batch_size = 2)
+    from backend.query_parse import extract_query_locations
+
+    query_locs = [loc.lower() for loc in extract_query_locations(query)]
 
     retrieved_chunks = []
     for idx in indices[0]:
-        chunk = metadata[idx]
+        if idx < 0:
+            continue
+        row = dict(metadata[idx])
+        haystack = (row.get("chunk") or "").lower()
+        tagged = [str(loc).lower() for loc in (row.get("locations") or [])]
+        matches_query = bool(query_locs) and any(
+            loc in haystack or loc in tagged for loc in query_locs
+        )
+        if require_locations and query_locs and not matches_query:
+            continue
+        row["match_priority"] = matches_query
+        retrieved_chunks.append(row)
 
-        # Optional: prioritize chunks matching query location
-        if query_locs and any(loc in chunk.get("locations", []) for loc in query_locs):
-            chunk["match_priority"] = True
-        else:
-            chunk["match_priority"] = False
-
-        retrieved_chunks.append(chunk)
-
-    # Sort to show matching locations first
     retrieved_chunks.sort(key=lambda c: c["match_priority"], reverse=True)
     return retrieved_chunks
 
