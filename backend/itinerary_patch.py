@@ -96,6 +96,18 @@ def patch_day(itinerary: dict, day_num: int, new_day: dict | list) -> dict:
     return updated
 
 
+def apply_patches(itinerary: dict, patches: list) -> dict:
+    """Apply a list of slot replacements. Unlisted slots stay as they are."""
+    updated = itinerary
+    for patch in patches:
+        day = patch.get("day") or patch.get("target_day")
+        time_slot = patch.get("time") or patch.get("target_time")
+        if day is None or not time_slot:
+            continue
+        updated = patch_activity(updated, day, time_slot, patch)
+    return updated
+
+
 def extract_json(text: str) -> Any:
     """Pull a JSON object or array out of an LLM response."""
     if not text:

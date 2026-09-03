@@ -1,6 +1,6 @@
 import unittest
 
-from backend.itinerary_patch import patch_activity, patch_day
+from backend.itinerary_patch import apply_patches, patch_activity, patch_day
 
 
 SAMPLE = {
@@ -67,6 +67,30 @@ class PatchDayTests(unittest.TestCase):
         updated = patch_day(SAMPLE, day_num=2, new_day=new_day)
         self.assertEqual(updated["itinerary"][0], SAMPLE["itinerary"][0])
         self.assertEqual(updated["itinerary"][1]["activities"][0]["activity"], "Beitou hot springs")
+
+
+class ApplyPatchesTests(unittest.TestCase):
+    def test_only_listed_slots_change(self):
+        updated = apply_patches(
+            SAMPLE,
+            [
+                {
+                    "day": 2,
+                    "time": "Morning",
+                    "activity": "National Palace Museum",
+                    "food": "Museum cafe",
+                }
+            ],
+        )
+        self.assertEqual(updated["itinerary"][0], SAMPLE["itinerary"][0])
+        self.assertEqual(
+            updated["itinerary"][1]["activities"][0]["activity"],
+            "National Palace Museum",
+        )
+        self.assertEqual(
+            updated["itinerary"][1]["activities"][1]["activity"],
+            "Elephant Mountain",
+        )
 
 
 if __name__ == "__main__":

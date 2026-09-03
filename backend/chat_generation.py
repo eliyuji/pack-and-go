@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
@@ -7,6 +9,7 @@ from semantic_search import retrieve_context
 from backend.database.attraction_query import get_places_for_city
 from backend.query_parse import extract_city
 from backend.itinerary_patch import (
+    apply_patches,
     extract_json,
     modification_summary,
     normalize_time_slot,
@@ -25,6 +28,25 @@ llm = ChatGroq(
     model=GROQ_MODEL,
     temperature=0.6
 )
+
+REFINE_CONTEXT_CHARS = 4000
+KNOWN_INTENT_TYPES = {
+    "generate_new",
+    "modify_activity",
+    "modify_day",
+    "add_preference",
+    "regenerate_all",
+}
+
+
+def _llm_text(response) -> str:
+    content = getattr(response, "content", response)
+    return content if isinstance(content, str) else str(content or "")
+
+
+def _travel_context(state: ItineraryState, limit: int = REFINE_CONTEXT_CHARS) -> str:
+    text = state.get("semantic_context") or ""
+    return text if limit is None else text[:limit]
 
 
 class ItineraryState(TypedDict):
@@ -85,10 +107,10 @@ Return ONLY valid JSON, no markdown.
 """
 
     response = llm.invoke([SystemMessage(content=intent_prompt)])
-    intent = extract_json(response.content)
-    if not isinstance(intent, dict) or not intent.get("type"):
-        # Keep the current trip; treat unclear feedback as a preference tweak.
-        intent = {"type": "add_preference", "preference": feedback}
+    intent = extract_json(_llm_text(response))
+    if not isinstance(intent, dict) or intent.get("type") not in KNOWN_INTENT_TYPES:
+        state["modification_intent"] = {"type": "noop", "preference": feedback}
+        return state
     if intent.get("target_time"):
         intent["target_time"] = normalize_time_slot(intent["target_time"])
     state["modification_intent"] = intent
@@ -98,6 +120,9 @@ Return ONLY valid JSON, no markdown.
 def generate_or_modify_itinerary(state: ItineraryState) -> ItineraryState:
     intent = state.get("modification_intent") or {}
     current_itinerary = state.get("itinerary") or {}
+    if not (state.get("feedback") or "").strip():
+        intent = {"type": "generate_new"}
+        state["modification_intent"] = intent
     intent_type = intent.get("type")
 
     try:
@@ -111,7 +136,11 @@ def generate_or_modify_itinerary(state: ItineraryState) -> ItineraryState:
             if not intent.get("target_day"):
                 raise ValueError("Could not tell which day to change.")
             itinerary = modify_entire_day(state, current_itinerary, intent)
-        elif intent_type in ("add_preference", "regenerate_all"):
+        elif intent_type == "add_preference":
+            itinerary = apply_preference_patches(state, current_itinerary, intent)
+            if not itinerary or not itinerary.get("itinerary"):
+                raise ValueError("Could not apply that preference. The current itinerary was left unchanged.")
+        elif intent_type == "regenerate_all":
             itinerary = regenerate_with_preferences(state, current_itinerary, intent)
             if not itinerary or not itinerary.get("itinerary"):
                 raise ValueError("Could not apply that preference. The current itinerary was left unchanged.")
@@ -175,7 +204,7 @@ Local Places:
     raw = ""
     for attempt in range(3):
         response = llm.invoke(messages)
-        raw = response.content if isinstance(response.content, str) else str(response.content or "")
+        raw = _llm_text(response)
         parsed = extract_json(raw)
         if isinstance(parsed, dict) and parsed.get("itinerary"):
             return parsed
@@ -197,7 +226,7 @@ def modify_specific_activity(state: ItineraryState, current: Dict, intent: Dict)
     target_day = intent["target_day"]
     target_time = intent.get("target_time")
     preference = intent.get("preference", "")
-    context_text = state["semantic_context"]
+    context_text = _travel_context(state)
 
     system_prompt = """
 You are replacing ONE activity in a travel itinerary.
@@ -213,14 +242,14 @@ Current itinerary:
 Replace Day {target_day} {target_time} with something that matches: {preference}
 
 Travel context:
-{context_text[:1000]}
+{context_text}
 """
 
     response = llm.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt)
     ])
-    new_activity = extract_json(response.content)
+    new_activity = extract_json(_llm_text(response))
     if not isinstance(new_activity, dict) or not new_activity.get("activity"):
         raise ValueError("Could not generate a replacement activity.")
     return patch_activity(current, target_day, target_time, new_activity)
@@ -230,7 +259,7 @@ def modify_entire_day(state: ItineraryState, current: Dict, intent: Dict) -> Dic
     """Ask the LLM for one replacement day, then patch it in Python."""
     target_day = intent["target_day"]
     preference = intent.get("preference", "")
-    context_text = state["semantic_context"]
+    context_text = _travel_context(state)
 
     system_prompt = """
 You are replacing ONE day in a travel itinerary.
@@ -253,21 +282,61 @@ Current itinerary:
 Regenerate Day {target_day} with these preferences: {preference}
 
 Travel context:
-{context_text[:1000]}
+{context_text}
 """
 
     response = llm.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt)
     ])
-    new_day = extract_json(response.content)
+    new_day = extract_json(_llm_text(response))
     if not new_day:
         raise ValueError(f"Could not generate a replacement for Day {target_day}.")
     return patch_day(current, target_day, new_day)
 
 
+def apply_preference_patches(
+    state: ItineraryState, current: Dict, intent: Dict
+) -> Dict[str, Any]:
+    """Ask Groq which slots to change, then splice them in Python."""
+    preference = intent.get("preference", "")
+    context_text = _travel_context(state)
+
+    system_prompt = """
+You are updating a travel itinerary to match a preference.
+Return ONLY the slots that must change as JSON:
+{"patches": [{"day": 2, "time": "Morning", "activity": "...", "food": "..."}]}
+Do not rewrite days or slots that already match the preference.
+No markdown, no full itinerary unless you cannot list patches — then return
+{"itinerary": [ ... same day count as the current trip ... ]}.
+"""
+
+    user_prompt = f"""
+Current itinerary:
+{json.dumps(current, indent=2)}
+
+Preference:
+{preference}
+
+Travel context:
+{context_text}
+"""
+
+    response = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt),
+    ])
+    parsed = extract_json(_llm_text(response))
+    if isinstance(parsed, dict) and parsed.get("patches"):
+        return apply_patches(current, parsed["patches"])
+    if isinstance(parsed, dict) and parsed.get("itinerary"):
+        return parsed
+    return current
+
+
 def regenerate_with_preferences(state: ItineraryState, current: Dict, intent: Dict) -> Dict[str, Any]:
     preference = intent.get("preference", "")
+    context_text = _travel_context(state)
 
     system_prompt = """
 You are updating a travel itinerary based on user preferences.
@@ -283,7 +352,7 @@ User Preferences:
 {preference}
 
 Context:
-{state["semantic_context"][:1000]}
+{context_text}
 
 Update the itinerary to match these preferences while keeping the same structure and trip length.
 """
@@ -292,10 +361,16 @@ Update the itinerary to match these preferences while keeping the same structure
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt)
     ])
-    parsed = extract_json(response.content)
+    parsed = extract_json(_llm_text(response))
     if isinstance(parsed, dict) and parsed.get("itinerary"):
         return parsed
     return current
+
+
+def _route_after_retrieve(state: ItineraryState) -> str:
+    if (state.get("feedback") or "").strip():
+        return "understand_intent"
+    return "generate_modify"
 
 
 def create_itinerary_graph():
@@ -304,7 +379,14 @@ def create_itinerary_graph():
     workflow.add_node("understand_intent", understand_modification_intent)
     workflow.add_node("generate_modify", generate_or_modify_itinerary)
     workflow.set_entry_point("retrieve_context")
-    workflow.add_edge("retrieve_context", "understand_intent")
+    workflow.add_conditional_edges(
+        "retrieve_context",
+        _route_after_retrieve,
+        {
+            "understand_intent": "understand_intent",
+            "generate_modify": "generate_modify",
+        },
+    )
     workflow.add_edge("understand_intent", "generate_modify")
     workflow.add_edge("generate_modify", END)
     return workflow.compile()

@@ -21,7 +21,7 @@ DESTINATIONS = [
     {
         "city": "Bali",
         "label": "3-5 days",
-        "image": "https://images.unsplash.com/photo-1537996194471-e657df975ab2?auto=format&fit=crop&w=600&h=800",
+        "image": "https://images.unsplash.com/photo-1575573330964-db3dad170190?auto=format&fit=crop&w=600&h=800",
     },
     {
         "city": "New York",

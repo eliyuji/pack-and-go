@@ -9,8 +9,7 @@ import time
 import spacy
 from tqdm import tqdm
 from groq import Groq, APITimeoutError, APIError
-from local_llm import extract_locations_flan_batch
- 
+
 load_dotenv()
 
 # Load local embedding model
@@ -267,6 +266,8 @@ def extract_locations_hybrid(chunks, cache, file_name):
         print(f"\n🤖 Flan-T5 on {len(missing_chunks)} missing chunks...\n")
 
         start_time = time.perf_counter()
+        from local_llm import extract_locations_flan_batch
+
         flan_results = extract_locations_flan_batch(missing_chunks, batch_size=2)
         elapsed_time = time.perf_counter() - start_time
 
