@@ -1,13 +1,11 @@
 from groq import Groq
-import json
 from semantic_search import load_index, retrieve_context
 from backend.database.attraction_query import get_places_for_city
 from backend.query_parse import extract_city
-from backend.itinerary_patch import normalize_time_slot
+from backend.itinerary_patch import extract_json, normalize_time_slot
 from dotenv import load_dotenv
 import os
 import random
-import re
 
 def guess_time_slot(activity: str) -> str:
     """Guess logical time slot based on activity keywords."""
@@ -140,37 +138,11 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 client = Groq(api_key=KEY)
 load_index()
 
-def extract_json(text: str):
-    """
-    Tries multiple strategies to extract valid JSON from a model response.
-    Handles:
-    - ```json ... ``` fenced blocks
-    - Plain JSON without code fences
-    - Text with JSON embedded inside
-    """
-    # Try matching fenced JSON
-    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text)
-    if match:
-        candidate = match.group(1)
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
 
-    # Try matching any {...} block that looks like JSON
-    match = re.search(r"(\{[\s\S]*\})", text)
-    if match:
-        candidate = match.group(1)
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
+def _has_itinerary(parsed) -> bool:
+    return isinstance(parsed, dict) and bool(parsed.get("itinerary"))
 
-    # Try direct load if the whole text is just JSON
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
+
 def ensure_food(itinerary:dict, structured_places:list):
     """If any time slot is missing food, it'll fill it with t """
     restaurants = [p for p in structured_places if p.get("category")=="restaurant"]
@@ -198,28 +170,6 @@ def ensure_food(itinerary:dict, structured_places:list):
                 activity["food"] = pick_restaurant_for_activity(activity_text)
     return itinerary
 
-def extract_json(text: str):
-    # fenced ```json blocks
-    match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text)
-    if match:
-        cand = match.group(1)
-        try:
-            return json.loads(cand)
-        except json.JSONDecodeError:
-            pass
-    # any top-level {...}
-    match = re.search(r"(\{[\s\S]*\})", text)
-    if match:
-        cand = match.group(1)
-        try:
-            return json.loads(cand)
-        except json.JSONDecodeError:
-            pass
-    # whole text
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
 
 def generate_itinerary(query, k=10, max_retries=2):
     # 1) retrieval
@@ -249,7 +199,7 @@ def generate_itinerary(query, k=10, max_retries=2):
 
     # Step 4: retry/fixer loop
     retries = 0
-    while not parsed and retries < max_retries:
+    while not _has_itinerary(parsed) and retries < max_retries:
         retries += 1
         # Strong fixer: insist on valid JSON only
         fix_prompt = (
@@ -266,10 +216,10 @@ def generate_itinerary(query, k=10, max_retries=2):
             ],
             temperature=0
         )
-        raw_output = response.choices[0].message.content.strip()
+        raw_output = (response.choices[0].message.content or "").strip()
         parsed = extract_json(raw_output)
 
-    if not parsed:
+    if not _has_itinerary(parsed):
         return {"error": "No JSON Found", "raw": raw_output}
 
     # Normalize times, ensure food, then return

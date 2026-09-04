@@ -1,6 +1,6 @@
 import unittest
 
-from backend.itinerary_patch import apply_patches, patch_activity, patch_day
+from backend.itinerary_patch import apply_patches, extract_json, patch_activity, patch_day
 
 
 SAMPLE = {
@@ -67,6 +67,19 @@ class PatchDayTests(unittest.TestCase):
         updated = patch_day(SAMPLE, day_num=2, new_day=new_day)
         self.assertEqual(updated["itinerary"][0], SAMPLE["itinerary"][0])
         self.assertEqual(updated["itinerary"][1]["activities"][0]["activity"], "Beitou hot springs")
+
+
+class ExtractJsonTests(unittest.TestCase):
+    def test_plain_object(self):
+        self.assertEqual(extract_json('{"itinerary": []}'), {"itinerary": []})
+
+    def test_fenced_block(self):
+        text = "```json\n{\"itinerary\": [{\"day\": 1}]}\n```"
+        self.assertEqual(extract_json(text), {"itinerary": [{"day": 1}]})
+
+    def test_empty_or_garbage(self):
+        self.assertEqual(extract_json(""), {})
+        self.assertEqual(extract_json("not json at all"), {})
 
 
 class ApplyPatchesTests(unittest.TestCase):
