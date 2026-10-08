@@ -1,26 +1,401 @@
 @import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #120c1c;
+  --panel: #1b1329;
+  --line: rgba(255, 255, 255, 0.1);
+  --text: #f7f4ff;
+  --muted: rgba(247, 244, 255, 0.62);
+  --accent: #7c3aed;
+  --accent-2: #db2777;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  min-height: 100%;
+  background: radial-gradient(900px 500px at 0% 0%, #3b2a6e 0%, transparent 50%),
+    linear-gradient(180deg, #1a1028 0%, #120c1c 100%);
+  color: var(--text);
+  font-family: var(--font-sans), Inter, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+button,
+input {
+  font: inherit;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 200px 320px 1fr;
+  min-height: 100vh;
+}
+
+.shell:has(.workspace:not(.trip)) {
+  grid-template-columns: 200px 1fr;
+}
+
+.rail {
+  padding: 1.2rem 1rem;
+  border-right: 1px solid var(--line);
+  background: rgba(10, 6, 18, 0.45);
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 1.15rem;
+  margin-bottom: 1.4rem;
+}
+
+.rail nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.rail nav button,
+.hero-actions button,
+.tabs button,
+.day-toggle,
+.chips button,
+.composer button,
+.saved-list button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.5rem 0.85rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.rail nav button.active,
+.tabs button.active {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+
+.rail-note,
+.muted,
+.eyebrow {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.chat-col {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  padding: 1.1rem;
+  min-width: 0;
+}
+
+.chat-col h2 {
+  margin: 0 0 0.8rem;
+  font-size: 1rem;
+}
+
+.thread {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.bubble {
+  padding: 0.7rem 0.85rem;
+  border-radius: 14px;
+  line-height: 1.45;
+  font-size: 0.92rem;
+  max-width: 95%;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: rgba(124, 58, 237, 0.35);
+}
+
+.bubble.assistant {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.chips {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.7rem 0;
+}
+
+.chips button {
+  font-size: 0.78rem;
+}
+
+.chip-label {
+  margin: 0.45rem 0 0.1rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.chips button.picked {
+  background: rgba(124, 58, 237, 0.35);
+  border-color: rgba(124, 58, 237, 0.7);
+}
+
+.composer {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.composer input {
+  flex: 1;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(20, 14, 36, 0.9);
+  color: var(--text);
+  padding: 0.65rem 0.9rem;
+}
+
+.workspace {
+  padding: 1.2rem 1.4rem 2rem;
+  min-width: 0;
+}
+
+.workspace.trip {
+  padding: 0 0 1.5rem;
+}
+
+.hero {
+  min-height: 220px;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+}
+
+.hero-fade {
+  background: linear-gradient(180deg, rgba(18, 12, 28, 0.15), rgba(18, 12, 28, 0.92));
+  min-height: 220px;
+  padding: 1.4rem 1.5rem;
+}
+
+.hero h1 {
+  margin: 0.2rem 0 0.6rem;
+  font-size: 2rem;
+}
+
+.tags,
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.tags span {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+}
+
+.hero-actions {
+  margin-top: 0.8rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.8rem 1.4rem 0;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 1rem;
+  padding: 1rem 1.4rem 0;
+}
+
+.day-toggle {
+  width: 100%;
+  margin: 0.4rem 0;
+  font-weight: 600;
+}
+
+.stop {
+  display: grid;
+  grid-template-columns: 72px 1.1fr 1fr 1fr;
+  gap: 0.7rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.stop-head {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.when span {
+  display: block;
+  font-weight: 700;
+}
+
+.when small,
+.what p,
+.eats span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.what h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.98rem;
+}
+
+.eats .same-district {
+  display: block;
+  color: #e9d5ff;
+  font-size: 0.72rem;
+}
+
+.where,
+.eats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.where a,
+.eats a {
+  color: inherit;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 0.4rem 0.5rem;
+}
+
+.where a:hover,
+.eats a:hover {
+  background: rgba(124, 58, 237, 0.25);
+}
+
+.map-pane {
+  height: 420px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #1b1329;
+}
+
+.map-pane.tall {
+  margin: 1rem 1.4rem;
+  height: 560px;
+}
+
+.trip-map,
+.leaflet-container,
+.empty-map {
+  height: 100% !important;
+  width: 100% !important;
+}
+
+/* Tailwind preflight sets img { max-width: 100%; height: auto } and hides tiles. */
+.leaflet-container img {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.empty-map,
+.empty-hero {
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+.pg-pin {
+  background: none !important;
+}
+
+.pg-pin span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #7c3aed;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.25);
+}
+
+.pg-pin.food span {
+  background: #db2777;
+  box-shadow: 0 0 0 3px rgba(219, 39, 119, 0.25);
+}
+
+.tips {
+  padding: 1rem 2rem;
+  line-height: 1.6;
+}
+
+.sources {
+  margin: 1.2rem 1.4rem 0;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.sources h2 {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+}
+
+.sources ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.sources a {
+  color: #e9d5ff;
+}
+
+.banner {
+  margin: 0.8rem 1.4rem 0;
+  color: #fecaca;
+}
+
+.saved-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+@media (max-width: 1100px) {
+  .shell,
+  .shell:has(.workspace:not(.trip)) {
+    grid-template-columns: 1fr;
+  }
+  .board {
+    grid-template-columns: 1fr;
+  }
+  .stop {
+    grid-template-columns: 1fr;
+  }
 }

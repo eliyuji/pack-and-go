@@ -8,7 +8,8 @@ from backend.youtube_service import get_video_metadata
 from backend.youtube_service import save_transcript_and_metadata
 from rag_pipeline import generate_itinerary, format_itinerary, reorder_itinerary, guess_time_slot
 from rag_pipeline import normalize_activity_times, ensure_food
-from backend.query_parse import places_for_query
+from backend.query_parse import anchor_places_for_query, food_places_for_query
+from backend.database.place_coords import fill_itinerary_coords
 
 # Import LangGraph functions
 try:
@@ -25,6 +26,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # Next.js frontend
+        "http://127.0.0.1:3000",
         "http://localhost:8501",  # Streamlit default port
         "*"  # Allow all for development
     ],
@@ -41,9 +43,18 @@ class FeedbackRequest(BaseModel):
     feedback: str  # User feedback
     current_itinerary: Dict[str, Any]  # Current structured itinerary
 
+class HydrateRequest(BaseModel):
+    current_itinerary: Dict[str, Any]
+
 @app.get("/")
 def read_root():
     return {"message": "Hello from FastAPI!"}
+
+@app.post("/places/hydrate")
+def hydrate_place_coords(request: HydrateRequest):
+    """Fill missing lat/lon on an existing itinerary. Does not call Groq."""
+    return {"structured": fill_itinerary_coords(request.current_itinerary)}
+
 
 @app.get("/health")
 def health_check():
@@ -137,7 +148,12 @@ def generate_initial_itinerary_v2(request: QueryReq):
             )
 
         result = normalize_activity_times(payload["structured"])
-        result = ensure_food(result, places_for_query(request.query))
+        result = ensure_food(
+            result,
+            food_places_for_query(request.query),
+            anchor_places=anchor_places_for_query(request.query),
+        )
+        result = fill_itinerary_coords(result)
 
         formatted_days = []
         for day in result.get("itinerary", []):
@@ -194,7 +210,12 @@ def refine_itinerary(request: FeedbackRequest):
             raise HTTPException(status_code=500, detail="Failed to refine itinerary")
 
         result = normalize_activity_times(result)
-        result = ensure_food(result, places_for_query(request.query))
+        result = ensure_food(
+            result,
+            food_places_for_query(request.query),
+            anchor_places=anchor_places_for_query(request.query),
+        )
+        result = fill_itinerary_coords(result)
 
         formatted_days = []
         for day in result.get("itinerary", []):

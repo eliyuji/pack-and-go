@@ -1,6 +1,7 @@
 import os
 import re
 import html
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -158,6 +159,30 @@ st.markdown(
         border-left: 3px solid #c084fc;
         color: #f7f4ff;
     }
+    .slot-panel, .food-panel {
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        padding: 0.95rem 1.05rem;
+        min-height: 7.5rem;
+        color: #f7f4ff;
+    }
+    .slot-kicker {
+        color: #d8b4fe;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        margin-bottom: 0.35rem;
+    }
+    .food-chip {
+        background: rgba(255,255,255,0.08);
+        border-radius: 10px;
+        padding: 0.45rem 0.6rem;
+        margin: 0.35rem 0 0 0;
+        font-size: 0.88rem;
+    }
+    .food-chip a { color: #e9d5ff; }
     .recent-card {
         background: rgba(255,255,255,0.08);
         border-radius: 16px;
@@ -403,6 +428,167 @@ def display_itinerary(itinerary_text):
         st.markdown("".join(parts), unsafe_allow_html=True)
 
 
+SLOT_ORDER = {"morning": 0, "afternoon": 1, "evening": 2}
+
+
+def day_numbers(structured):
+    days = []
+    for day in (structured or {}).get("itinerary", []):
+        try:
+            days.append(int(day.get("day")))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(days))
+
+
+def day_activities(structured, day_num):
+    for day in (structured or {}).get("itinerary", []):
+        try:
+            if int(day.get("day")) == int(day_num):
+                activities = day.get("activities", [])
+                return sorted(
+                    activities,
+                    key=lambda a: SLOT_ORDER.get(str(a.get("time", "")).lower(), 9),
+                )
+        except (TypeError, ValueError):
+            continue
+    return []
+
+
+def day_pins(activities):
+    """Map rows for the day's activity (if matched) and every food option."""
+    pins = []
+    for activity in activities:
+        spots = list(activity.get("food_options") or [])
+        if activity.get("place"):
+            spots = [activity["place"]] + spots
+        for option in spots:
+            lat, lon = option.get("lat"), option.get("lon")
+            if lat is None or lon is None:
+                continue
+            pins.append(
+                {
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "name": option.get("name") or "",
+                    "slot": activity.get("time") or "",
+                }
+            )
+    return pins
+
+
+def _food_chip_html(option: dict) -> str:
+    name = html.escape(str(option.get("name") or "Restaurant"))
+    rating = option.get("rating")
+    stars = f"{html.escape(str(rating))}⭐" if rating else ""
+    district = html.escape(str(option.get("district") or ""))
+    url = option.get("maps_url")
+    meta = " · ".join(part for part in (stars, district) if part)
+    link = (
+        f' <a href="{html.escape(url, quote=True)}" target="_blank">Maps</a>'
+        if url
+        else ""
+    )
+    return f'<div class="food-chip"><strong>{name}</strong>{(" · " + meta) if meta else ""}{link}</div>'
+
+
+def render_slot_row(activity: dict, row_key: str):
+    slot = activity.get("time") or "Slot"
+    left, right = st.columns([1, 1], gap="medium")
+    with left:
+        st.markdown(
+            f'<div class="slot-panel"><div class="slot-kicker">{html.escape(str(slot))}</div>'
+            f"{html.escape(str(activity.get('activity') or ''))}</div>",
+            unsafe_allow_html=True,
+        )
+    with right:
+        options = activity.get("food_options") or []
+        food = activity.get("food") or ""
+        chips = "".join(_food_chip_html(o) for o in options[:3])
+        if not chips and food:
+            chips = f'<div class="food-chip">{html.escape(str(food))}</div>'
+        if not chips:
+            chips = '<div class="food-chip">No food picks for this slot.</div>'
+        st.markdown(
+            f'<div class="food-panel"><div class="slot-kicker">Eat nearby</div>{chips}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def render_day_board(structured):
+    days = day_numbers(structured)
+    if not days:
+        return None
+
+    selected = st.selectbox(
+        "Day",
+        days,
+        format_func=lambda d: f"Day {d}",
+        key="map_day",
+    )
+    activities = day_activities(structured, selected)
+    plan, mmap = st.columns([1.2, 0.9], gap="large")
+    with plan:
+        for i, activity in enumerate(activities):
+            render_slot_row(activity, f"d{selected}_{i}")
+    with mmap:
+        st.markdown("**Map**")
+        pins = day_pins(activities)
+        if pins:
+            st.map(pd.DataFrame(pins), latitude="lat", longitude="lon", size=60)
+        else:
+            st.caption(
+                "No mapped spots for this day. Places covers Taipei, Tainan, "
+                "Taichung, Bangkok, and the Peninsula."
+            )
+    return selected
+
+
+def render_refine_sidebar():
+    with st.sidebar:
+        st.markdown("### Refine this trip")
+        st.caption("Chat lives here so the plan and map stay on the page.")
+        st.caption("Try: Change Day 2 morning to something more cultural")
+        for msg in st.session_state.conversation_history:
+            if msg.get("content") == "itinerary_generated":
+                continue
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+        feedback = st.chat_input("Tell me what to change...")
+        if not feedback:
+            return
+        with st.spinner("Updating your itinerary..."):
+            data, error = refine_itinerary_request(feedback)
+        if error:
+            st.session_state.conversation_history.append(
+                {"role": "user", "content": feedback}
+            )
+            st.session_state.conversation_history.append(
+                {"role": "assistant", "content": error}
+            )
+            st.rerun()
+        st.session_state.current_itinerary = data
+        st.session_state.structured_itinerary = data.get("structured", {})
+        summary = format_modification(data.get("modification"))
+        st.session_state.last_modification = summary
+        for item in st.session_state.recent_itineraries:
+            if item.get("query") == st.session_state.original_query:
+                item["raw"] = data
+                item["structured"] = data.get("structured", {})
+                item["formatted"] = data.get("itinerary", "")
+                break
+        st.session_state.conversation_history.append(
+            {"role": "user", "content": feedback}
+        )
+        st.session_state.conversation_history.append(
+            {
+                "role": "assistant",
+                "content": summary or "Updated itinerary based on your feedback.",
+            }
+        )
+        st.rerun()
+
+
 def render_nav():
     left, right = st.columns([2, 3])
     with left:
@@ -558,6 +744,12 @@ def render_chat_seed():
 
 
 def render_itinerary():
+    st.markdown(
+        "<style>.block-container { max-width: 1360px; }</style>",
+        unsafe_allow_html=True,
+    )
+    render_refine_sidebar()
+
     top_l, top_r = st.columns([4, 1])
     with top_l:
         st.markdown('<p class="hero-title">Your itinerary</p>', unsafe_allow_html=True)
@@ -565,69 +757,31 @@ def render_itinerary():
             f'<p class="hero-sub">{st.session_state.original_query}</p>',
             unsafe_allow_html=True,
         )
+        st.caption("Refine the trip from the left sidebar.")
     with top_r:
         if st.button("New trip", key="new_trip", width="stretch"):
             go_home()
             st.rerun()
 
-    left, right = st.columns([2, 1], gap="large")
-    with left:
-        itinerary_text = ""
-        if st.session_state.current_itinerary:
-            itinerary_text = st.session_state.current_itinerary.get("itinerary", "")
-        if st.session_state.last_modification:
-            st.success(st.session_state.last_modification)
-        display_itinerary(itinerary_text)
-        if itinerary_text:
-            st.download_button(
-                label="Download itinerary",
-                data=itinerary_text,
-                file_name="my_travel_itinerary.txt",
-                mime="text/plain",
-                width="stretch",
-            )
+    itinerary_text = ""
+    if st.session_state.current_itinerary:
+        itinerary_text = st.session_state.current_itinerary.get("itinerary", "")
+    if st.session_state.last_modification:
+        st.success(st.session_state.last_modification)
 
-    with right:
-        st.markdown("**Refine with chat**")
-        st.caption("Try: Change Day 2 morning to something more cultural")
-        for msg in st.session_state.conversation_history:
-            if msg.get("content") == "itinerary_generated":
-                continue
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
-        feedback = st.chat_input("Tell me what to change...")
-        if feedback:
-            with st.spinner("Updating your itinerary..."):
-                data, error = refine_itinerary_request(feedback)
-            if error:
-                st.session_state.conversation_history.append(
-                    {"role": "user", "content": feedback}
-                )
-                st.session_state.conversation_history.append(
-                    {"role": "assistant", "content": error}
-                )
-                st.rerun()
-            else:
-                st.session_state.current_itinerary = data
-                st.session_state.structured_itinerary = data.get("structured", {})
-                summary = format_modification(data.get("modification"))
-                st.session_state.last_modification = summary
-                for item in st.session_state.recent_itineraries:
-                    if item.get("query") == st.session_state.original_query:
-                        item["raw"] = data
-                        item["structured"] = data.get("structured", {})
-                        item["formatted"] = data.get("itinerary", "")
-                        break
-                st.session_state.conversation_history.append(
-                    {"role": "user", "content": feedback}
-                )
-                st.session_state.conversation_history.append(
-                    {
-                        "role": "assistant",
-                        "content": summary or "Updated itinerary based on your feedback.",
-                    }
-                )
-                st.rerun()
+    structured = st.session_state.structured_itinerary
+    if structured and day_numbers(structured):
+        render_day_board(structured)
+    else:
+        display_itinerary(itinerary_text)
+
+    if itinerary_text:
+        st.download_button(
+            label="Download itinerary",
+            data=itinerary_text,
+            file_name="my_travel_itinerary.txt",
+            mime="text/plain",
+        )
 
 
 def render_itineraries():

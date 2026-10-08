@@ -9,6 +9,8 @@ from typing import Optional
 # Canonical names should match Places SQLite (`cities.name`) when the city exists.
 CITY_ALIASES = {
     "taipei": "Taipei",
+    "tainan": "Tainan",
+    "taichung": "Taichung",
     "bangkok": "Bangkok",
     "paris": "Paris",
     "tokyo": "Tokyo",
@@ -17,6 +19,15 @@ CITY_ALIASES = {
     "new york city": "New York",
     "nyc": "New York",
     "hong kong": "Hong Kong",
+    "bay area": "Peninsula",
+    "peninsula": "Peninsula",
+    "san mateo": "Peninsula",
+    "san carlos": "Peninsula",
+    "redwood city": "Peninsula",
+    "menlo park": "Peninsula",
+    "palo alto": "Peninsula",
+    "milpitas": "Peninsula",
+    "fremont": "Peninsula",
 }
 
 _ALIAS_PATTERN = re.compile(
@@ -90,10 +101,47 @@ def extract_query_locations(query: str) -> list[str]:
     return unique
 
 
-def places_for_query(query: str) -> list:
+def places_for_query(query: str, **kwargs) -> list:
     from backend.database.attraction_query import get_places_for_city
 
     city = extract_city(query)
     if not city:
         return []
-    return get_places_for_city(city)
+    return get_places_for_city(city, **kwargs)
+
+
+def food_places_for_query(query: str) -> list:
+    """Wider pool than the prompt list: a day can need 9 distinct restaurants
+    in one district, so 3 per district is not enough."""
+    return places_for_query(query, limit_per_district=15, pool_per_district=45)
+
+
+def youtube_ids_from_filenames(names: list | None) -> list[str]:
+    """Turn transcript blob names like `abc123.txt` into YouTube video IDs."""
+    ids: list[str] = []
+    for raw in names or []:
+        name = str(raw or "").strip().rsplit("/", 1)[-1]
+        if name.endswith(".txt"):
+            name = name[:-4]
+        if name and name not in ids:
+            ids.append(name)
+    return ids
+
+
+def merge_source_ids(*groups: list | None) -> list[str]:
+    ids: list[str] = []
+    for group in groups:
+        for item in group or []:
+            if item and item not in ids:
+                ids.append(item)
+    return ids[:8]
+
+
+def anchor_places_for_query(query: str) -> list:
+    """Every place in the city, used to turn activity text into coordinates."""
+    from backend.database.attraction_query import get_city_places
+
+    city = extract_city(query)
+    if not city:
+        return []
+    return get_city_places(city)

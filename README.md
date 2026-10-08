@@ -7,19 +7,19 @@ Ask for a 3-day trip, get morning / afternoon / evening plans with food suggesti
 **Demo (watch this first):** _paste your recording URL here after you upload it_  
 Example: `[Watch the demo](https://youtu.be/YOUR_ID)` or a Google Drive / Loom link set to anyone-with-the-link.
 
-The live surface is **Streamlit + FastAPI**. A Next.js folder exists as a stub and is not the product UI.
+The product UI is **Next.js + FastAPI** (`frontend/`, [http://localhost:3000](http://localhost:3000)). **Streamlit** (`streamlit run frontend/frontend.py`) stays as the rollback / downloadable demo on port 8501.
 
 ---
 
 ## What to show in the recording (~90 seconds)
 
-1. **Home** — dark search page, destination cards.
-2. **Generate** — type `3-day trip in Taipei` and wait (Taipei has the Places dump + the strongest index coverage). Optional alternate: click **Paris**, answer days + vibe.
-3. **Itinerary** — day cards with morning / afternoon / evening.
-4. **Refine** — in the sidebar: `Change Day 2 morning to something more cultural`.
-5. **Proof** — pause on Day 2 morning vs Day 1 / other Day 2 slots. Only that slot should move.
+1. **Chat** — left rail + composer. Type `3-day trip in Taipei` (Places dump + strongest index coverage).
+2. **Board** — clock timeline, food links beside each stop, numbered map pins.
+3. **Refine** — in chat: `Change Day 2 morning to something more cultural`.
+4. **Proof** — pause on Day 2 morning vs Day 1 / other Day 2 slots. Only that slot should move.
+5. Optional: **Save** (this browser) or open Streamlit on :8501 as the rollback demo.
 
-Backup lines if you have extra time: `Remove shopping from Day 3`, `Add more food experiences throughout`.
+Backup lines: `Remove shopping from Day 3`, `Add more food experiences throughout`.
 
 ---
 
@@ -44,7 +44,7 @@ Retrieval is hybrid:
 
 | Layer | Choice |
 | --- | --- |
-| UI | Streamlit — [`frontend/frontend.py`](frontend/frontend.py) |
+| UI | Next.js — [`frontend/src`](frontend/src) (Streamlit demo: [`frontend/frontend.py`](frontend/frontend.py)) |
 | API | FastAPI — `POST /itinerary/v2`, `POST /itinerary/refine` |
 | LLM | Groq (`openai/gpt-oss-20b`, override with `GROQ_MODEL`) |
 | Agent | LangGraph — [`backend/chat_generation.py`](backend/chat_generation.py) |
@@ -72,16 +72,17 @@ YouTube (videos, captions)
               LangGraph classify → patch
                            │
                            ▼
-              Streamlit: generate + refine chat
+              Next.js: chat + day board + map
+              Streamlit rollback on :8501
 ```
 
 ---
 
 ## Design choices (good interview talking points)
 
-**Streamlit, not Next.js.** FastAPI already existed. The demo needed a real generate → refine loop, not a frontend rewrite. Streamlit is the product surface; Next.js is left as a stub on purpose.
+**Next.js is the product UI; Streamlit stays as rollback.** Same FastAPI (`/itinerary/v2`, `/itinerary/refine`). Clock times (08:00 / 13:00 / 18:00) are a **display mapping** from morning / afternoon / evening until the schema stores real clocks. Save is `localStorage` in this browser, not a share URL.
 
-**Scripted clarifying chat on destination cards.** Clicking Paris does not call Groq twice. The UI asks length and vibe in two fixed turns, then composes a query like `3-day trip in Paris focused on food`. A full prompt in the search bar skips that and hits `/itinerary/v2` in one shot. Extra LLM “interviewer” questions would burn quota and add latency.
+**Streamlit clarifying cards still exist on :8501.** Clicking Paris there does not call Groq twice. The UI asks length and vibe in two fixed turns, then composes a query like `3-day trip in Paris focused on food`. Extra LLM “interviewer” questions would burn quota and add latency.
 
 **Patch, don’t regenerate.** `itinerary_patch.py` has no Groq import. Tests assert Day 1 is bit-for-bit unchanged when Day 2 morning is replaced.
 
@@ -106,7 +107,8 @@ Refine payload `current_itinerary` is the **structured** JSON from the previous 
 ## Repo map
 
 ```text
-frontend/frontend.py           UI: home, card → seed chat, itinerary + refine
+frontend/src                  Product UI (Next.js chat + board + map)
+frontend/frontend.py           Streamlit rollback: cards, itinerary, refine
 backend/main.py               FastAPI routes
 backend/chat_generation.py    LangGraph generate + classify
 backend/itinerary_patch.py    Splice one slot or one day
@@ -152,7 +154,7 @@ GROQ_MODEL=openai/gpt-oss-20b
 BACKEND_URL=http://127.0.0.1:8000
 ```
 
-### Two terminals
+### Terminals
 
 Both from `pack-and-go/` with the venv on.
 
@@ -165,12 +167,21 @@ uvicorn backend.main:app --reload --port 8000
 Wait for `Application startup complete` and `Loaded FAISS index`.
 
 ```bash
-# terminal 2
+# terminal 2 — product UI
+cd frontend
+cp -n .env.local.example .env.local
+npm install
+npm run dev
+```
+
+```bash
+# optional — Streamlit rollback / recording demo
 source venv/bin/activate
 streamlit run frontend/frontend.py
 ```
 
-- UI: [http://localhost:8501](http://localhost:8501)
+- Product UI: [http://localhost:3000](http://localhost:3000)
+- Streamlit demo: [http://localhost:8501](http://localhost:8501)
 - Health: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
 Then follow the same script as the recording (Taipei generate → Day 2 morning refine).
@@ -190,17 +201,23 @@ python -m unittest tests.test_itinerary_patch
 
 ---
 
+Engineering log (bugs, ingest results, what we would change next): [`docs/challenges-and-changes.md`](docs/challenges-and-changes.md).
+
+---
+
 ## Status
 
 **In the demo**
-- Streamlit home, destination cards, clarifying chat, itinerary + refine sidebar
+- Next.js chat, day board, Leaflet map, localStorage save (`frontend/src`)
+- Streamlit rollback: home, destination cards, itinerary + refine sidebar
 - Groq itinerary JSON with Places context
 - LangGraph refine + surgical JSON patch
-- YouTube → captions/Whisper → GCS/Postgres → FAISS pipeline (offline; not required to click through Streamlit)
+- YouTube → captions/Whisper → GCS/Postgres → FAISS pipeline (offline)
 
 **Intentionally not built**
-- Auth, saved trips, or a shipped Next.js UI
-- Places coverage beyond the Taipei dump
+- Auth or server-side share URLs (Save is this-browser `localStorage`)
+- Real clock times / stop photos (08:00 / 13:00 / 18:00 are display-only)
+- Places coverage beyond Taipei, Tainan, Taichung, and Peninsula
 - Publishing the FAISS index (use the recording; rebuild locally if you have GCS)
 
 ---
@@ -233,5 +250,5 @@ python -m backend.database.populating_db Taipei
 - Without `faiss_index.bin` + `metadata.pkl` in the repo root, the API fails while loading the index.
 - Groq model IDs change; a `model_not_found` 404 means update `GROQ_MODEL`.
 - The patch layer is deterministic; classification and generated JSON are not. Bad model output can still be a no-op or a wrong slot.
-- First generate is slow (location tagging + Groq). The UI waits up to 120s.
+- First generate is slow (location tagging + Groq). Next and Streamlit wait up to 120s.
 - Paris / Tokyo / Bali cards still generate; retrieval is only as good as what is in FAISS (Taipei is the intended demo city).

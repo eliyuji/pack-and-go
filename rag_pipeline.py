@@ -2,8 +2,17 @@ from groq import Groq
 from semantic_search import load_index, retrieve_context
 from backend.database.attraction_query import get_places_for_city
 from backend.query_parse import extract_city
+from backend.geo_match import (
+    district_from_text,
+    match_place,
+    next_spread_district,
+    sort_by_distance,
+)
 from backend.itinerary_patch import extract_json, normalize_time_slot
+from backend.database.place_coords import fill_missing_coords
 from dotenv import load_dotenv
+from urllib.parse import quote_plus
+from collections import Counter
 import os
 import random
 
@@ -126,6 +135,7 @@ Rules:
 - Each day must have 3 time slots: Morning, Afternoon, Evening.
 - Each time slot must have an 'activity' AND a 'food' entry.
 - 'food' should be specific (restaurant, market, or dish).
+- Spread days across different districts; do not keep every slot in one neighborhood.
 - If unknown, make a realistic guess.
 - Do not use markdown or text explanations.
 """
@@ -143,31 +153,147 @@ def _has_itinerary(parsed) -> bool:
     return isinstance(parsed, dict) and bool(parsed.get("itinerary"))
 
 
-def ensure_food(itinerary:dict, structured_places:list):
-    """If any time slot is missing food, it'll fill it with t """
+FOOD_OPTIONS_PER_SLOT = 3
+
+
+def maps_url(place: dict) -> str:
+    """Link to the venue on Google Maps. Plain URL, so it costs nothing."""
+    query = quote_plus(place.get("name") or "")
+    url = f"https://www.google.com/maps/search/?api=1&query={query}"
+    place_id = place.get("place_id")
+    if place_id:
+        url += f"&query_place_id={quote_plus(place_id)}"
+    return url
+
+
+def food_option(place: dict) -> dict:
+    """Fields the UI needs to show a card and drop a map pin."""
+    place = fill_missing_coords(place)
+    return {
+        "name": place.get("name"),
+        "district": place.get("district"),
+        "rating": place.get("rating"),
+        "address": place.get("address"),
+        "lat": place.get("lat"),
+        "lon": place.get("lon"),
+        "place_id": place.get("place_id"),
+        "maps_url": maps_url(place),
+    }
+
+
+PLACEHOLDER_FOOD = {"", "n/a", "na", "none", "tbd", "unknown", "-"}
+
+
+def _missing_food(value) -> bool:
+    return str(value or "").strip().lower() in PLACEHOLDER_FOOD
+
+
+#how many of the nearest restaurants to sample from, so food stays close to the
+#activity without every trip returning the single closest venue
+NEARBY_SHORTLIST = 8
+
+
+def ensure_food(
+    itinerary: dict,
+    structured_places: list,
+    options_per_slot: int = FOOD_OPTIONS_PER_SLOT,
+    anchor_places: list | None = None,
+):
+    """Fill any missing food slot and attach nearby restaurant options.
+
+    `anchor_places` is the full place list for the city. When an activity's text
+    matches one of those places we rank food by real distance; otherwise we fall
+    back to matching the district name out of the activity text.
+    """
     restaurants = [p for p in structured_places if p.get("category")=="restaurant"]
     districts = sorted({p.get("district", "") for p in structured_places if p.get("district")})
-    #if we can match the district from the activity suggested
-    def pick_restaurant_for_activity(act_text):
-        act_low = (act_text or "").lower()
-        matched_district = None
-        for d in districts:
-              if d and d.lower().split()[0] in act_low:
-                  matched_district = d
-        candid = [r for r in restaurants if r.get("district") == matched_district] if matched_district else restaurants
-        if not candid:
-            #if no district found then fall back to any district (should later on search for places within x radius)
-            candid = restaurants
-        if not candid:
-            return "unknown"
-        sel = random.choice(candid)
-        return f"{sel.get('name')} ({sel.get('district','unknown district')})"
-    
+    anchors = anchor_places or []
+    used_districts: Counter = Counter()
+
+    def pick_restaurants_for_activity(act_text, already_used, anchor):
+        nearby = []
+        if anchor:
+            nearby = sort_by_distance(
+                restaurants, float(anchor["lat"]), float(anchor["lon"])
+            )[:NEARBY_SHORTLIST]
+
+        matched_district = district_from_text(act_text, districts)
+        # No landmark and no named district: rotate so leftover slots are not
+        # all filled from the Anping-heavy high-rating pile.
+        if not matched_district and not anchor:
+            matched_district = next_spread_district(districts, used_districts)
+
+        near, elsewhere = [], []
+        for r in restaurants:
+            if matched_district and r.get("district") == matched_district:
+                near.append(r)
+            else:
+                elsewhere.append(r)
+
+        #best first: nearest to the activity, then same district, then anywhere.
+        #repeats are only allowed once every fresh option is exhausted.
+        tiers = (
+            [r for r in nearby if r.get("name") not in already_used],
+            [r for r in near if r.get("name") not in already_used],
+            [r for r in elsewhere if r.get("name") not in already_used],
+            near,
+            elsewhere,
+        )
+
+        picks, taken = [], set()
+        for tier in tiers:
+            if len(picks) >= options_per_slot:
+                break
+            candidates = [r for r in tier if r.get("name") not in taken]
+            if not candidates:
+                continue
+            for r in random.sample(
+                candidates, min(options_per_slot - len(picks), len(candidates))
+            ):
+                picks.append(r)
+                taken.add(r.get("name"))
+
+        if anchor:
+            picks = sort_by_distance(picks, float(anchor["lat"]), float(anchor["lon"]))
+        return picks
+
     for day in itinerary.get("itinerary", []):
+        used_today = {
+            option.get("name")
+            for activity in day.get("activities", [])
+            for option in activity.get("food_options") or []
+        }
         for activity in day.get("activities", []):
-            if not activity.get("food"):
-                activity_text = activity.get("activity", "")
-                activity["food"] = pick_restaurant_for_activity(activity_text)
+            act_text = activity.get("activity", "")
+            anchor = match_place(act_text, anchors) if anchors else None
+            if anchor and not activity.get("place"):
+                activity["place"] = food_option(anchor) | {
+                    "category": anchor.get("category")
+                }
+
+            has_food = not _missing_food(activity.get("food"))
+            existing = [fill_missing_coords(option) for option in activity.get("food_options") or []]
+            if existing:
+                activity["food_options"] = existing
+            existing_have_coords = any(
+                option.get("lat") is not None and option.get("lon") is not None
+                for option in existing
+            )
+            if has_food and existing and existing_have_coords:
+                continue
+            picks = pick_restaurants_for_activity(act_text, used_today, anchor)
+            used_today.update(p.get("name") for p in picks)
+            used_districts.update(p.get("district") for p in picks if p.get("district"))
+            if not has_food:
+                if picks:
+                    top = picks[0]
+                    activity["food"] = (
+                        f"{top.get('name')} ({top.get('district','unknown district')})"
+                    )
+                else:
+                    activity["food"] = "unknown"
+            if not existing_have_coords:
+                activity["food_options"] = [food_option(p) for p in picks]
     return itinerary
 
 

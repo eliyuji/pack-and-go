@@ -64,6 +64,13 @@ def patch_activity(
         "activity": new_activity.get("activity") or existing.get("activity", ""),
         "food": new_activity.get("food", existing.get("food", "")),
     }
+    # Options belong to the old restaurant; drop them when the food changes so
+    # ensure_food can refill with venues that match the new slot.
+    options = new_activity.get("food_options") or (
+        existing.get("food_options") if patched["food"] == existing.get("food") else None
+    )
+    if options:
+        patched["food_options"] = options
     if new_activity.get("source"):
         patched["source"] = new_activity["source"]
     elif existing.get("source"):

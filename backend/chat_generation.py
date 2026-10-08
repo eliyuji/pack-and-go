@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 import json
 from semantic_search import retrieve_context
 from backend.database.attraction_query import get_places_for_city
-from backend.query_parse import extract_city
+from backend.query_parse import extract_city, merge_source_ids, youtube_ids_from_filenames
 from backend.itinerary_patch import (
     apply_patches,
     extract_json,
@@ -56,6 +56,7 @@ class ItineraryState(TypedDict):
     messages: List[Any]
     semantic_context: str
     structured_places: List[Dict]
+    source_ids: List[str]
     modification_intent: Dict[str, Any]
     final_itinerary: Dict[str, Any]
     error: str
@@ -72,6 +73,9 @@ def retrieve_travel_context(state: ItineraryState) -> ItineraryState:
 
     state["semantic_context"] = context_text
     state["structured_places"] = structured_places
+    state["source_ids"] = youtube_ids_from_filenames(
+        [c.get("file_name") for c in context]
+    )
     return state
 
 
@@ -194,6 +198,16 @@ Travel Context:
 
 Local Places:
 {structured_text}
+
+Rules:
+- Honor dietary, accessibility, indoor/outdoor, and schedule constraints named in the query.
+- If the query names a start time, begin morning around that time. If it names a dinner time, plan evening food around that time. If it names an end time, wrap the day then.
+- Match the social vibe in activity wording (date ideas vs friend hangout vs solo vs family).
+- Spread days across different districts. Do not put every slot in the same neighborhood.
+- For Tainan, do not keep every day in Anping; use West Central, East, North, South, or Yongkang too.
+- For the Peninsula / Bay Area, spread days across San Mateo, San Carlos, Redwood City, Menlo Park, Palo Alto, Milpitas, and Fremont. Prefer parks, preserves, downtowns, and local food over malls.
+- Name the district in each activity so food can stay nearby.
+- Prefer venues from Local Places when they fit.
 """
 
     messages = [
@@ -417,14 +431,24 @@ def process_itinerary_request(
         "messages": [],
         "semantic_context": "",
         "structured_places": [],
+        "source_ids": [],
         "modification_intent": {},
         "final_itinerary": {},
         "error": "",
     }
 
     result = itinerary_graph.invoke(initial_state)
+    structured = result.get("final_itinerary") or current_itinerary or {}
+    if isinstance(structured, dict):
+        sources = merge_source_ids(
+            structured.get("sources"),
+            (current_itinerary or {}).get("sources") if current_itinerary else [],
+            result.get("source_ids"),
+        )
+        if sources:
+            structured = {**structured, "sources": sources}
     payload = {
-        "structured": result.get("final_itinerary") or current_itinerary or {},
+        "structured": structured,
         "modification": modification_summary(result.get("modification_intent") or {}),
     }
     if result.get("error"):

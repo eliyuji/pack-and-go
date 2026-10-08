@@ -263,21 +263,31 @@ def extract_locations_hybrid(chunks, cache, file_name):
 
     
     if missing_chunks:
-        print(f"\n🤖 Flan-T5 on {len(missing_chunks)} missing chunks...\n")
+        use_flan = os.getenv("INDEX_USE_FLAN", "").strip().lower() in ("1", "true", "yes")
+        if not use_flan:
+            print(
+                f"\nSkipping FLAN-T5 for {len(missing_chunks)} chunks (spaCy-only). "
+                "Set INDEX_USE_FLAN=1 to enable. Retrieve still matches on chunk text.\n"
+            )
+            for idx in missing_indices:
+                results[idx] = []
+                cache_key = f"{file_name}:{hash(chunks[idx])}"
+                cache[cache_key] = []
+        else:
+            print(f"\n🤖 Flan-T5 on {len(missing_chunks)} missing chunks...\n")
 
-        start_time = time.perf_counter()
-        from local_llm import extract_locations_flan_batch
+            start_time = time.perf_counter()
+            from local_llm import extract_locations_flan_batch
 
-        flan_results = extract_locations_flan_batch(missing_chunks, batch_size=2)
-        elapsed_time = time.perf_counter() - start_time
+            flan_results = extract_locations_flan_batch(missing_chunks, batch_size=2)
+            elapsed_time = time.perf_counter() - start_time
 
-        print(f"⏱️ Flan-T5 extraction completed in {elapsed_time:.2f} seconds\n")
+            print(f"⏱️ Flan-T5 extraction completed in {elapsed_time:.2f} seconds\n")
 
-       
-        for idx, locs in zip(missing_indices, flan_results):
-            results[idx] = locs
-            cache_key = f"{file_name}:{hash(chunks[idx])}"
-            cache[cache_key] = locs
+            for idx, locs in zip(missing_indices, flan_results):
+                results[idx] = locs
+                cache_key = f"{file_name}:{hash(chunks[idx])}"
+                cache[cache_key] = locs
 
     print(f"✅ Completed hybrid extraction for {file_name}\n")
     return results

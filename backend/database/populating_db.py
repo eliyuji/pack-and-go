@@ -20,6 +20,11 @@ CATEGORIES = {
         "observation deck",
         "art gallery",
         "garden",
+        "park",
+        "hiking trail",
+        "nature preserve",
+        "farmers market",
+        "historic downtown",
     ],
     "restaurant": [
         "restaurant",
@@ -63,17 +68,52 @@ CITY_DISTRICTS = {
         "Nangang District",
         "Wenshan District",
     ],
+    "Tainan": [
+        "Anping District",
+        "West Central District",
+        "East District",
+        "North District",
+        "South District",
+        "Yongkang District",
+    ],
+    "Taichung": [
+        "Central District",
+        "West District",
+        "Xitun District",
+        "Nantun District",
+        "North District",
+        "Beitun District",
+        "Fengyuan District",
+    ],
+    # Towns as districts so "weekend in Palo Alto" shares one Places dump.
+    "Peninsula": [
+        "San Mateo",
+        "San Carlos",
+        "Redwood City",
+        "Menlo Park",
+        "Palo Alto",
+        "Milpitas",
+        "Fremont",
+    ],
+}
+
+# Text Search is better as "park in Palo Alto, California" than "... Peninsula".
+CITY_QUERY_REGION = {
+    "Peninsula": "California",
 }
 
 
 def _require_places_key() -> str:
-    key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_PLACES")
-    if not key:
-        raise ValueError(
-            "GOOGLE_API_KEY is not set in .env. "
-            "Enable Places API (Text Search) in Google Cloud and create an API key."
-        )
-    return key
+    for name in ("GOOGLE_API_KEY", "GOOGLE_PLACES", "YOUTUBE_API_KEY"):
+        key = (os.getenv(name) or "").strip()
+        if key:
+            if name == "YOUTUBE_API_KEY":
+                print("Using YOUTUBE_API_KEY for Places (GOOGLE_API_KEY is empty).")
+            return key
+    raise ValueError(
+        "GOOGLE_API_KEY is not set in .env. "
+        "Enable Places API (Text Search) in Google Cloud and create an API key."
+    )
 
 
 def fetch_places(query, location=None, radius=3000, type=None, max_results=20):
@@ -123,7 +163,8 @@ def populate_city(city_name):
 
         for category, google_types in CATEGORIES.items():
             for gtype in google_types:
-                query = f"{gtype} in {district_name}, {city_name}"
+                region = CITY_QUERY_REGION.get(city_name, city_name)
+                query = f"{gtype} in {district_name}, {region}"
                 print(f"Fetching {query}...")
                 results = fetch_places(query, max_results=10)
                 for r in results:
@@ -155,9 +196,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "cities",
-        nargs="*",
-        default=list(CITY_DISTRICTS.keys()),
-        help='City names. Defaults to Taipei. Unknown cities are searched as a single region.',
+        nargs="+",
+        help="City names from CITY_DISTRICTS (Taipei, Tainan, Taichung, Peninsula). "
+        "Unknown names are searched as a single region. Always pass names explicitly "
+        "so a no-arg run cannot re-dump every city.",
     )
     args = parser.parse_args()
     for city in args.cities:
